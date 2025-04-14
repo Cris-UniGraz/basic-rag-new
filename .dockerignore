@@ -1,0 +1,86 @@
+# Git
+.git
+.gitignore
+.github
+
+# Docker
+.dockerignore
+docker-compose.yml
+Dockerfile*
+
+# Environment variables and secrets
+.env
+*.env
+.env.*
+!.env.example
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Unit tests
+.pytest_cache/
+.coverage
+htmlcov/
+pytest.ini
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# Documentation
+docs/
+README.md
+LICENSE
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Data directories (mount these as volumes)
+data/
+*.db
+*.sqlite
+chroma/
+vector_store/
+mongodb_data/
+
+# Logs
+logs/
+*.log
+
+# Model cache
+.models/
+.cache/
+huggingface/
+
+# Large files
+*.parquet
+*.arrow
+*.h5
+*.pkl
+*.joblib
+*.bin
