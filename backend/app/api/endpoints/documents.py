@@ -16,6 +16,8 @@ from app.services.llm_service import llm_service
 from app.core.embedding_manager import embedding_manager
 from app.models.vector_store import vector_store_manager
 
+from loguru import logger
+
 # Create RAG service
 rag_service = create_rag_service(llm_service)
 
@@ -47,8 +49,9 @@ async def upload_documents(
             raise HTTPException(status_code=400, detail="Language must be 'german' or 'english'")
         
         # Append language suffix to collection name if needed
-        if not collection_name.endswith(f"_{language.lower()}"):
-            collection_name = f"{collection_name}_{language.lower()}"
+        language_sufix = get_language_sufix(language)
+        if not collection_name.endswith(f"_{language_sufix}"):
+            collection_name = f"{collection_name}_{language_sufix}"
             logger.info(f"Using collection name with language suffix: {collection_name}")
         
         # Get destination directory
@@ -97,7 +100,6 @@ async def list_collections():
     """
     List all available collections.
     """
-    from loguru import logger
     
     try:
         # Increment request counter
@@ -244,8 +246,9 @@ async def search_documents(
             raise HTTPException(status_code=400, detail="Language must be 'german' or 'english'")
         
         # Append language suffix to collection name if needed
-        if not collection_name.endswith(f"_{language.lower()}"):
-            collection_name = f"{collection_name}_{language.lower()}"
+        language_sufix = get_language_sufix(language)
+        if not collection_name.endswith(f"_{language_sufix}"):
+            collection_name = f"{collection_name}_{language_sufix}"
             logger.info(f"Using collection name with language suffix: {collection_name}")
         
         # Get embedding model based on language
@@ -378,3 +381,11 @@ async def process_uploaded_documents(
     except Exception as e:
         print(f"Error processing uploaded documents: {e}")
         # Log error but don't raise (background task)
+
+# Function to obtain the correct language code
+def get_language_sufix(language: str) -> str:
+    language_mapping = {
+        "german": "de",
+        "english": "en"
+    }
+    return language_mapping.get(language.lower(), "unknown")

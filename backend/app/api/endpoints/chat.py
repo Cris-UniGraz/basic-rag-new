@@ -10,6 +10,7 @@ from app.core.metrics import REQUESTS_TOTAL, REQUEST_DURATION, track_active_task
 from app.schemas.document import ChatMessage, ChatResponse
 from app.services.rag_service import RAGService, create_rag_service
 from app.services.llm_service import llm_service
+from app.core.coroutine_manager import coroutine_manager
 from app.core.embedding_manager import embedding_manager
 from pymilvus import utility
 
@@ -287,7 +288,7 @@ async def chat(
         
         # Clean up resources in background
         if background_tasks:
-            background_tasks.add_task(asyncio.create_task, rag_service.coroutine_manager.cleanup())
+            background_tasks.add_task(asyncio.create_task, coroutine_manager.cleanup())
         
         return chat_response
         

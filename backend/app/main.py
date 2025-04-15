@@ -25,6 +25,14 @@ from app.core.metrics import REQUEST_DURATION, REQUESTS_TOTAL
 # Initialize logging
 logger = setup_logging()
 
+# VSCode Debugging
+import debugpy
+debugpy.listen(("0.0.0.0", 5678))
+# print("Esperando conexión del depurador...")
+# debugpy.wait_for_client()
+# print("¡Depurador conectado!")
+
+
 # Startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):

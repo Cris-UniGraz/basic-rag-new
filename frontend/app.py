@@ -597,6 +597,7 @@ def documents_tab():
                             status_text.text("Starting document processing...")
                             
                             # Simulate progress update (since backend process is in background)
+                            current_progress = 0
                             for i in range(current_progress, 101, 5):
                                 if i <= 100:  # Safety check
                                     progress_bar.progress(i / 100)
