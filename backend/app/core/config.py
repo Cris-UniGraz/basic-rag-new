@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     TASK_TIMEOUT: int = Field(default=60)  # Seconds
     MAX_RETRIES: int = Field(default=3)
     RETRY_BACKOFF: float = Field(default=1.5)  # Exponential backoff factor
+    
+    # Vector Store Management
+    DONT_KEEP_COLLECTIONS: bool = Field(default=False)
 
     class Config:
         env_file = ".env"

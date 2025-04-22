@@ -349,14 +349,14 @@ async def process_uploaded_documents(
         vector_store = vector_store_manager.get_collection(collection_name, embedding_model)
         
         if vector_store:
-            # Add to existing collection
+            # Add to existing collection - use DONT_KEEP_COLLECTIONS from env
             vector_store_manager.add_documents(
                 collection_name,
                 split_docs,
                 embedding_model
             )
         else:
-            # Create new collection
+            # Create new collection - use DONT_KEEP_COLLECTIONS from env
             vector_store_manager.create_collection(
                 split_docs,
                 embedding_model,

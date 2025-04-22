@@ -63,6 +63,9 @@ AZURE_OPENAI_API_EMBEDDINGS_DEPLOYMENT_ID=text-embedding-3-large
 # Cohere API
 COHERE_API_KEY=your_cohere_api_key
 
+# Vector Store Management
+DONT_KEEP_COLLECTIONS=false  # Set to true if you want to recreate collections each time
+
 # Optional: Adjust other settings as needed
 ```
 
@@ -156,6 +159,7 @@ http://localhost:8000/metrics
 1. **Connection Errors**: Make sure all containers are running with `docker-compose ps`
 2. **Memory Errors**: Increase the memory allocated to Docker in Docker Desktop settings
 3. **API Key Errors**: Verify your API keys are correctly set in the `.env` file
+
 
 ### Logs
 

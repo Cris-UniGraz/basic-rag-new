@@ -280,7 +280,8 @@ class VectorStoreManager:
         documents: List[Document],
         embedding_model: Embeddings,
         collection_name: str,
-        batch_size: int = 100
+        batch_size: int = 100,
+        force_recreate: bool = None
     ) -> VectorStore:
         """
         Create a new vector store collection with the provided documents.
@@ -290,6 +291,9 @@ class VectorStoreManager:
             embedding_model: Embedding model to use
             collection_name: Name of the collection
             batch_size: Number of documents to process in each batch
+            force_recreate: If True, will drop any existing collection with the same name.
+                           If False, will keep existing collections and return them.
+                           If None, will use the value from DONT_KEEP_COLLECTIONS in .env
             
         Returns:
             Milvus vector store
@@ -298,10 +302,21 @@ class VectorStoreManager:
         self.connect()
         
         try:
+            # Use the .env variable if force_recreate is not provided
+            from app.core.config import settings
+            if force_recreate is None:
+                force_recreate = settings.DONT_KEEP_COLLECTIONS
+                logger.info(f"Using DONT_KEEP_COLLECTIONS={force_recreate} from environment")
+            
             # Check if collection already exists
             if utility.has_collection(collection_name):
-                logger.warning(f"Collection '{collection_name}' already exists, dropping it")
-                utility.drop_collection(collection_name)
+                if force_recreate:
+                    logger.warning(f"Collection '{collection_name}' already exists and force_recreate=True, dropping it")
+                    utility.drop_collection(collection_name)
+                else:
+                    logger.info(f"Collection '{collection_name}' already exists and force_recreate=False, reusing it")
+                    # Return the existing collection instead of recreating it
+                    return self.get_collection(collection_name, embedding_model)
             
             logger.info(f"Creating new Milvus collection '{collection_name}' with {len(documents)} documents")
             
@@ -409,7 +424,8 @@ class VectorStoreManager:
         collection_name: str,
         documents: List[Document],
         embedding_model: Embeddings,
-        batch_size: int = 100
+        batch_size: int = 100,
+        force_recreate: bool = None
     ) -> None:
         """
         Add documents to an existing collection.
@@ -419,13 +435,24 @@ class VectorStoreManager:
             documents: Documents to add
             embedding_model: Embedding model to use
             batch_size: Number of documents to process in each batch
+            force_recreate: If True and collection exists, will recreate it instead of adding to it.
+                            If None, will use the value from DONT_KEEP_COLLECTIONS in .env
         """
+        # Use the .env variable if force_recreate is not provided
+        from app.core.config import settings
+        if force_recreate is None:
+            force_recreate = settings.DONT_KEEP_COLLECTIONS
+            logger.info(f"Using DONT_KEEP_COLLECTIONS={force_recreate} from environment")
+            
         # Get the vector store
         vector_store = self.get_collection(collection_name, embedding_model)
         
-        if not vector_store:
-            logger.warning(f"Collection '{collection_name}' does not exist, creating it")
-            self.create_collection(documents, embedding_model, collection_name, batch_size)
+        if not vector_store or force_recreate:
+            if not vector_store:
+                logger.warning(f"Collection '{collection_name}' does not exist, creating it")
+            elif force_recreate:
+                logger.warning(f"Collection '{collection_name}' exists but force_recreate=True, recreating it")
+            self.create_collection(documents, embedding_model, collection_name, batch_size, force_recreate)
             return
         
         try:
