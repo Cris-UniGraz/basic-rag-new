@@ -10,6 +10,20 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Debug configuration - safe version that won't error if already running
+import debugpy
+try:
+    # Check if debugpy is already listening - the hasattr check helps avoid errors
+    if not hasattr(debugpy, "_listening"):
+        debugpy.listen(("0.0.0.0", 5679))
+        print("Debug server started on port 5679")
+        # Uncomment these if you want to pause until the debugger connects
+        # print("Waiting for debugger attach")
+        # debugpy.wait_for_client()
+        # print("Debugger attached")
+except Exception as e:
+    print(f"Debug setup error (this is not a problem): {e}")
+
 # API configuration
 DEFAULT_API_URL = os.getenv("API_URL", "http://localhost:8000")
 print(f"Using API URL: {DEFAULT_API_URL}")
@@ -383,15 +397,29 @@ def display_chat():
     if st.session_state.sources:
         with st.expander("Sources", expanded=False):
             for source in st.session_state.sources:
-                st.markdown(f"""
-                <div class="source-item">
-                    <span class="source-label">Source:</span> {source['source']}<br>
-                    <span class="source-label">Page:</span> {source.get('page_number', 'N/A')}<br>
-                    <span class="source-label">Type:</span> {source.get('file_type', 'Unknown')}<br>
-                    {f"<span class='source-label'>Sheet:</span> {source['sheet_name']}<br>" if source.get('sheet_name') else ""}
-                    {f"<span class='source-label'>Score:</span> {source.get('reranking_score', 0):.4f}" if 'reranking_score' in source else ""}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown("---")
+                st.write(f"**Source:** {source['source']}")
+                st.write(f"**Page:** {source.get('page_number', 'N/A')}")
+                st.write(f"**Type:** {source.get('file_type', 'Unknown')}")
+                
+                if source.get('sheet_name'):
+                    st.write(f"**Sheet:** {source['sheet_name']}")
+                
+                if 'reranking_score' in source:
+                    st.write(f"**Score:** {source.get('reranking_score', 0):.4f}")
+    
+    # if st.session_state.sources:
+    #     with st.expander("Sources", expanded=False):
+    #         for source in st.session_state.sources:
+    #             st.markdown(f"""
+    #             <div class="source-item">
+    #                 <span class="source-label">Source:</span> {source['source']}<br>
+    #                 <span class="source-label">Page:</span> {source.get('page_number', 'N/A')}<br>
+    #                 <span class="source-label">Type:</span> {source.get('file_type', 'Unknown')}<br>
+    #                 {f"<span class='source-label'>Sheet:</span> {source['sheet_name']}<br>" if source.get('sheet_name') else ""}
+    #                 {f"<span class='source-label'>Score:</span> {source.get('reranking_score', 0):.4f}" if 'reranking_score' in source else ""}
+    #             </div>
+    #             """, unsafe_allow_html=True)
     
     # Display processing time
     if st.session_state.processing_time:
@@ -411,10 +439,7 @@ def handle_user_input():
         "content": user_input,
         "timestamp": datetime.now().isoformat()
     })
-    
-    # Display messages (including new user message)
-    display_chat()
-    
+      
     # Show spinner while processing
     with st.spinner("Thinking..."):
         # Send message to API
@@ -434,6 +459,9 @@ def handle_user_input():
         st.session_state.sources = sources
         st.session_state.processing_time = processing_time
     
+    # Display messages (including new user message)
+    display_chat()
+      
     # Rerun to update UI
     st.rerun()
 

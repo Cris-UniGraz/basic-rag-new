@@ -43,6 +43,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8501:8501"
+      - "5679:5679" # For debugging with VSCode
     volumes:
       - ./frontend:/app
       - ./data:/app/data
