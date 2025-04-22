@@ -2,9 +2,10 @@ import streamlit as st
 import httpx
 import os
 import time
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import json
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -336,6 +337,34 @@ def upload_documents(files, language: str, collection_name: Optional[str] = None
         }
 
 
+def get_upload_progress(task_id: str) -> Dict[str, Any]:
+    """
+    Get upload progress from the API.
+    
+    Args:
+        task_id: The unique ID of the upload task
+        
+    Returns:
+        Progress data
+    """
+    try:
+        with httpx.Client() as client:
+            response = client.get(
+                get_api_url(f"/documents/progress/{task_id}"),
+                timeout=10.0
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        print(f"Error fetching progress: {e}")
+        return {
+            "progress": 0,
+            "status": "unknown",
+            "message": f"Error fetching progress: {str(e)}",
+            "timestamp": time.time()
+        }
+
+
 def search_documents(query: str, collection_name: Optional[str] = None, language: str = "german", top_k: int = 5) -> Dict[str, Any]:
     """
     Search for documents using the API.
@@ -407,19 +436,6 @@ def display_chat():
                 
                 if 'reranking_score' in source:
                     st.write(f"**Score:** {source.get('reranking_score', 0):.4f}")
-    
-    # if st.session_state.sources:
-    #     with st.expander("Sources", expanded=False):
-    #         for source in st.session_state.sources:
-    #             st.markdown(f"""
-    #             <div class="source-item">
-    #                 <span class="source-label">Source:</span> {source['source']}<br>
-    #                 <span class="source-label">Page:</span> {source.get('page_number', 'N/A')}<br>
-    #                 <span class="source-label">Type:</span> {source.get('file_type', 'Unknown')}<br>
-    #                 {f"<span class='source-label'>Sheet:</span> {source['sheet_name']}<br>" if source.get('sheet_name') else ""}
-    #                 {f"<span class='source-label'>Score:</span> {source.get('reranking_score', 0):.4f}" if 'reranking_score' in source else ""}
-    #             </div>
-    #             """, unsafe_allow_html=True)
     
     # Display processing time
     if st.session_state.processing_time:
@@ -605,31 +621,58 @@ def documents_tab():
                             for file in response["uploaded_files"]:
                                 st.write(f"- {file}")
                         
-                        # Create a progress bar container - it will be updated in the background
-                        progress_container = st.empty()
-                        with progress_container.container():
-                            st.write("**Processing Documents:**")
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            
-                            # Check progress periodically
-                            progress_key = f"upload_progress_{collection_name}"
-                            
-                            # Initialize the progress
-                            progress_bar.progress(0)
-                            
-                            # Simulate progress since we can't directly track backend progress
-                            # We'll update at fixed intervals
-                            
-                            # Set initial status text
-                            status_text.text("Starting document processing...")
-                            
-                            # Simulate progress update (since backend process is in background)
-                            current_progress = 0
-                            for i in range(current_progress, 101, 5):
-                                if i <= 100:  # Safety check
-                                    progress_bar.progress(i / 100)
+                        # Get task_id for progress tracking
+                        task_id = response.get("task_id")
+                        if task_id:
+                            # Create a progress bar container - it will be updated in the background
+                            progress_container = st.empty()
+                            with progress_container.container():
+                                st.write("**Processing Documents:**")
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+                                
+                                # Initialize the progress
+                                progress_bar.progress(0)
+                                
+                                # Poll for progress updates
+                                progress_complete = False
+                                while not progress_complete:
+                                    # Get current progress
+                                    progress_data = get_upload_progress(task_id)
+                                    progress = progress_data.get("progress", 0)
+                                    status = progress_data.get("status", "processing")
+                                    message = progress_data.get("message", "Processing documents...")
                                     
+                                    # Update UI
+                                    if progress >= 0:
+                                        progress_bar.progress(progress / 100)
+                                    status_text.text(message)
+                                    
+                                    # Check if processing is complete or failed
+                                    if status == "completed":
+                                        progress_bar.progress(1.0)
+                                        status_text.text("Processing complete!")
+                                        progress_complete = True
+                                    elif status == "error":
+                                        progress_bar.progress(1.0)
+                                        status_text.text(f"Error: {message}")
+                                        progress_complete = True
+                                    
+                                    # Wait before next poll
+                                    time.sleep(1)
+                        else:
+                            # Fallback to simulated progress if no task_id was returned
+                            progress_container = st.empty()
+                            with progress_container.container():
+                                st.write("**Processing Documents:**")
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+                                
+                                # Initialize the progress
+                                progress_bar.progress(0)
+                                
+                                # Simulate progress
+                                for i in range(0, 101, 5):
                                     # Update status text based on progress
                                     if i < 20:
                                         status_text.text("Loading and parsing documents...")
@@ -642,12 +685,15 @@ def documents_tab():
                                     else:
                                         status_text.text("Completing processing...")
                                     
-                                    # Artificial delay to show progress
+                                    # Update progress bar
+                                    progress_bar.progress(i / 100)
+                                    
+                                    # Artificial delay
                                     time.sleep(0.3)
-                            
-                            # Update one last time to ensure completion
-                            progress_bar.progress(1.0)
-                            status_text.text("Processing complete!")
+                                
+                                # Final update
+                                progress_bar.progress(1.0)
+                                status_text.text("Processing complete!")
                         
                         # Refresh collections
                         st.session_state.collections = get_collections()

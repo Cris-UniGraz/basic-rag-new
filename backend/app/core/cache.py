@@ -20,6 +20,9 @@ V = TypeVar('V')
 # In-memory cache for small objects with TTL
 memory_cache = TTLCache(maxsize=1000, ttl=settings.CACHE_TTL)
 
+# Progress tracking cache
+upload_progress_cache = {}
+
 # Initialize Redis connection
 try:
     redis_client = redis.Redis.from_url(
@@ -273,3 +276,75 @@ def clear_all_caches() -> None:
             logger.warning(f"Error clearing Redis cache: {e}")
     
     logger.info("Cleared all in-memory caches")
+
+
+# Upload progress tracking functions
+def track_upload_progress(task_id: str, progress: int, status: str = None, message: str = None) -> None:
+    """
+    Update the progress of a document upload task.
+    
+    Args:
+        task_id: Unique identifier for the upload task
+        progress: Progress percentage (0-100)
+        status: Status of the task (processing, completed, error)
+        message: Optional message to include
+    """
+    progress_data = {
+        "progress": progress,
+        "status": status or "processing",
+        "message": message or f"Processing documents - {progress}% complete",
+        "timestamp": time.time()
+    }
+    
+    # Update in-memory cache
+    upload_progress_cache[task_id] = progress_data
+    
+    # Update in Redis if available
+    if redis_client:
+        try:
+            redis_key = f"upload_progress:{task_id}"
+            redis_client.setex(
+                redis_key,
+                3600,  # 1 hour TTL
+                pickle.dumps(progress_data)
+            )
+        except Exception as e:
+            logger.warning(f"Error storing upload progress in Redis: {e}")
+    
+    logger.debug(f"Updated progress for task {task_id}: {progress}%")
+
+
+def get_upload_progress(task_id: str) -> Dict[str, Any]:
+    """
+    Get the current progress of a document upload task.
+    
+    Args:
+        task_id: Unique identifier for the upload task
+        
+    Returns:
+        Progress data dict with progress, status, and message
+    """
+    # Check in-memory cache first
+    if task_id in upload_progress_cache:
+        return upload_progress_cache[task_id]
+    
+    # Check Redis if available
+    if redis_client:
+        try:
+            redis_key = f"upload_progress:{task_id}"
+            cached_data = redis_client.get(redis_key)
+            if cached_data:
+                progress_data = pickle.loads(cached_data)
+                # Also store in memory for future fast access
+                upload_progress_cache[task_id] = progress_data
+                return progress_data
+        except Exception as e:
+            logger.warning(f"Error retrieving upload progress from Redis: {e}")
+    
+    # Return default if not found
+    return {
+        "progress": 0,
+        "status": "waiting",
+        "message": "Waiting to start processing",
+        "timestamp": time.time()
+    }

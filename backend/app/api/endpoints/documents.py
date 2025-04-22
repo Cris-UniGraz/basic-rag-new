@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 import os
 import time
 import asyncio
+import uuid
 from pathlib import Path
 
 from app.core.config import settings
@@ -15,6 +16,7 @@ from app.services.rag_service import RAGService, create_rag_service
 from app.services.llm_service import llm_service
 from app.core.embedding_manager import embedding_manager
 from app.models.vector_store import vector_store_manager
+from app.core.cache import track_upload_progress, get_upload_progress
 
 from loguru import logger
 
@@ -64,12 +66,19 @@ async def upload_documents(
             file_path = await save_upload_file(file, dest_dir, file.filename)
             saved_paths.append(file_path)
         
+        # Generate a unique task ID for tracking progress
+        task_id = str(uuid.uuid4())
+        
+        # Initialize progress at 0%
+        track_upload_progress(task_id, 0, "started", "Starting document processing")
+        
         # Process documents in background
         background_tasks.add_task(
             process_uploaded_documents,
             saved_paths,
             language,
-            collection_name
+            collection_name,
+            task_id
         )
         
         # Calculate processing time
@@ -86,13 +95,30 @@ async def upload_documents(
             "uploaded_files": [Path(path).name for path in saved_paths],
             "collection_name": collection_name,
             "language": language,
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "task_id": task_id  # Return task ID for tracking progress
         }
         
     except Exception as e:
         # Record error
         REQUESTS_TOTAL.labels(endpoint="/api/documents/upload", status="error").inc()
         raise HTTPException(status_code=500, detail=f"Error uploading documents: {str(e)}")
+
+
+@router.get("/progress/{task_id}", response_model=Dict[str, Any], summary="Get upload progress")
+async def get_document_progress(task_id: str):
+    """
+    Get the current progress of a document upload task.
+    
+    - **task_id**: The unique ID of the upload task
+    """
+    try:
+        # Get progress data
+        progress_data = get_upload_progress(task_id)
+        
+        return progress_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting progress: {str(e)}")
 
 
 @router.get("/collections", response_model=List[Dict[str, Any]], summary="List collections")
@@ -308,7 +334,8 @@ async def search_documents(
 async def process_uploaded_documents(
     file_paths: List[str],
     language: str,
-    collection_name: str
+    collection_name: str,
+    task_id: str
 ):
     """
     Process uploaded documents in the background.
@@ -317,6 +344,7 @@ async def process_uploaded_documents(
         file_paths: List of file paths
         language: Document language
         collection_name: Collection name
+        task_id: Unique ID for tracking progress
     """
     try:
         # Get embedding model based on language
@@ -325,16 +353,16 @@ async def process_uploaded_documents(
             else embedding_manager.english_model
         )
         
-        # We'll track progress with log messages since we can't use Streamlit in the backend
-        logger.info(f"Processing documents for collection '{collection_name}' - 10% complete")
+        # Update progress to 10%
+        track_upload_progress(task_id, 10, "processing", "Loading and parsing documents")
         
         # Load documents
         start_time = time.time()
         documents = load_documents(file_paths)
         loading_time = time.time() - start_time
         
-        # Log progress
-        logger.info(f"Processing documents for collection '{collection_name}' - 30% complete")
+        # Update progress to 30%
+        track_upload_progress(task_id, 30, "processing", "Processing and splitting documents")
         
         # Record document processing time
         DOCUMENT_PROCESSING_DURATION.labels(file_type="batch").observe(loading_time)
@@ -342,8 +370,8 @@ async def process_uploaded_documents(
         # Split documents
         split_docs = await rag_service.split_documents(documents)
         
-        # Log progress
-        logger.info(f"Processing documents for collection '{collection_name}' - 50% complete")
+        # Update progress to 50%
+        track_upload_progress(task_id, 50, "processing", "Creating vector embeddings")
         
         # Add to vector store
         vector_store = vector_store_manager.get_collection(collection_name, embedding_model)
@@ -363,8 +391,8 @@ async def process_uploaded_documents(
                 collection_name
             )
         
-        # Log progress
-        logger.info(f"Processing documents for collection '{collection_name}' - 80% complete")
+        # Update progress to 80%
+        track_upload_progress(task_id, 80, "processing", "Finalizing document storage")
         
         # Add parent documents
         parent_collection_name = f"{collection_name}_parents"
@@ -375,11 +403,13 @@ async def process_uploaded_documents(
             docs=documents
         )
         
-        # Log completion
-        logger.info(f"Processing documents for collection '{collection_name}' - 100% complete")
+        # Update progress to 100% (completed)
+        track_upload_progress(task_id, 100, "completed", "Processing completed successfully")
         
     except Exception as e:
-        print(f"Error processing uploaded documents: {e}")
+        logger.error(f"Error processing uploaded documents: {e}")
+        # Update progress with error
+        track_upload_progress(task_id, -1, "error", f"Error processing documents: {str(e)}")
         # Log error but don't raise (background task)
 
 # Function to obtain the correct language code
