@@ -475,7 +475,7 @@ class RAGService:
             # Handle case where no relevant documents were found
             if not all_reranked_docs:
                 logger.warning("No relevant documents found for the query")
-                no_docs_response = "Lo siento, no encontré inLeider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden."
+                no_docs_response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden."
                 if language.lower() == "english":
                     no_docs_response = "I'm sorry, I couldn't find relevant information about your question in the available documents."
                     
