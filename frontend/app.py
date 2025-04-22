@@ -444,8 +444,23 @@ def display_chat():
 
 def handle_user_input():
     """Handle user input."""
-    # Get user input
-    user_input = st.chat_input("Ask a question...")
+    # Create two columns: one for reset button and one for chat input
+    input_cols = st.columns([1, 10])
+    
+    # Reset button in the left column
+    with input_cols[0]:
+        if st.button("🔄", help="Reset conversation history", key="reset_btn_input"):
+            # Clear chat history
+            st.session_state.messages = []
+            st.session_state.sources = []
+            st.session_state.processing_time = None
+            if 'waiting_for_response' in st.session_state:
+                st.session_state.waiting_for_response = False
+            st.rerun()
+    
+    # Get user input in the right column
+    with input_cols[1]:
+        user_input = st.chat_input("Stelle eine Frage...")
     if not user_input:
         return
     
