@@ -18,12 +18,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt debugpy
 
+# Ensure .streamlit directory exists
+RUN mkdir -p /app/.streamlit
+
 # Copy application code
 COPY . .
+
+# Explicitly copy Streamlit configuration to ensure it's not overwritten
+COPY .streamlit/config.toml /app/.streamlit/config.toml
 
 # Expose ports
 EXPOSE 8501
 EXPOSE 5679
 
 # Command to run the application
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.baseUrlPath=frontend"]

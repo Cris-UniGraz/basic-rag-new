@@ -29,6 +29,12 @@ except Exception as e:
 DEFAULT_API_URL = os.getenv("API_URL", "http://localhost:8000")
 print(f"Using API URL: {DEFAULT_API_URL}")
 
+# Frontend configuration
+SHOW_FULL_FRONTEND = os.getenv("SHOW_FULL_FRONTEND", "True").lower() == "true"
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "")
+print(f"SHOW_FULL_FRONTEND: {SHOW_FULL_FRONTEND}")
+print(f"Default COLLECTION_NAME: {COLLECTION_NAME}")
+
 # Try several API URLs to find one that works
 ALL_API_URLS = [
     "http://localhost:8000",
@@ -119,6 +125,12 @@ if "collections" not in st.session_state:
     st.session_state.collections = []
 if "api_url" not in st.session_state:
     st.session_state.api_url = DEFAULT_API_URL
+if "selected_collection" not in st.session_state:
+    # Si SHOW_FULL_FRONTEND es False, usamos la colección predefinida
+    if not SHOW_FULL_FRONTEND and COLLECTION_NAME:
+        st.session_state.selected_collection = COLLECTION_NAME
+    else:
+        st.session_state.selected_collection = ""
 
 
 # Functions for API interaction
@@ -903,18 +915,28 @@ def main():
     """Main application."""
     st.title("RAG Assistant")
     
-    # Tabs
-    tab1, tab2, tab3 = st.tabs(["Chat", "Documents", "Settings"])
-    
-    with tab1:
+    # Si SHOW_FULL_FRONTEND es True, mostrar todas las pestañas
+    if SHOW_FULL_FRONTEND:
+        tab1, tab2, tab3 = st.tabs(["Chat", "Documents", "Settings"])
+        
+        with tab1:
+            display_chat()
+            handle_user_input()
+        
+        with tab2:
+            documents_tab()
+        
+        with tab3:
+            settings_tab()
+    else:
+        # Si SHOW_FULL_FRONTEND es False, mostrar solo la pestaña de Chat
+        # y usar la colección definida por defecto
+        if COLLECTION_NAME:
+            st.session_state.selected_collection = COLLECTION_NAME
+            print(f"Using default collection: {COLLECTION_NAME}")
+        
         display_chat()
         handle_user_input()
-    
-    with tab2:
-        documents_tab()
-    
-    with tab3:
-        settings_tab()
 
 
 if __name__ == "__main__":

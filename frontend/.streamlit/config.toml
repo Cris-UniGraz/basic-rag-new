@@ -1,0 +1,5 @@
+[server]
+baseUrlPath = "frontend"
+headless = true
+enableCORS = false
+enableXsrfProtection = true
