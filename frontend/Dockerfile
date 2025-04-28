@@ -3,7 +3,8 @@ FROM python:3.10-slim
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONFAULTHANDLER=1
+    PYTHONFAULTHANDLER=1 \
+    STREAMLIT_THEME=dark
 
 WORKDIR /app
 
@@ -21,15 +22,20 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
 # Ensure .streamlit directory exists
 RUN mkdir -p /app/.streamlit
 
+# Create Streamlit configuration for dark theme
+RUN echo '[theme]\nbase = "dark"\nprimaryColor = "#4B8BF4"\nbackgroundColor = "#1E1E1E"\nsecondaryBackgroundColor = "#252525"\ntextColor = "#FAFAFA"\nfont = "sans serif"' > /app/.streamlit/config.toml
+RUN echo '[server]\nbaseUrlPath = "frontend"\nheadless = true\nenableCORS = false\nenableXsrfProtection = true' >> /app/.streamlit/config.toml
+
 # Copy application code
 COPY . .
 
-# Explicitly copy Streamlit configuration to ensure it's not overwritten
-COPY .streamlit/config.toml /app/.streamlit/config.toml
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Expose ports
 EXPOSE 8501
 EXPOSE 5679
 
 # Command to run the application
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.baseUrlPath=frontend"]
+CMD ["/app/entrypoint.sh"]

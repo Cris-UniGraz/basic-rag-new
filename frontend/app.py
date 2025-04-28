@@ -8,6 +8,9 @@ from datetime import datetime
 import asyncio
 from dotenv import load_dotenv
 
+# Forzar tema oscuro antes de cualquier otra operación de Streamlit
+os.environ['STREAMLIT_THEME'] = 'dark'
+
 # Load environment variables
 load_dotenv()
 
@@ -72,6 +75,12 @@ st.set_page_config(
 # Add custom CSS
 st.markdown("""
 <style>
+/* Estilos generales para el tema oscuro */
+body {
+    color: #FAFAFA;
+    background-color: #0E1117;
+}
+
 .chat-message {
     padding: 1.5rem;
     border-radius: 0.5rem;
@@ -80,10 +89,12 @@ st.markdown("""
     flex-direction: column;
 }
 .chat-message.user {
-    background-color: #2b313e;
+    background-color: #1E2730;
+    border-left: 3px solid #4B8BF4;
 }
 .chat-message.assistant {
-    background-color: #475063;
+    background-color: #262D3D;
+    border-left: 3px solid #36D399;
 }
 .chat-message .avatar {
     width: 20%;
@@ -102,11 +113,29 @@ st.markdown("""
     margin-bottom: 0.5rem;
     padding: 0.5rem;
     border-radius: 0.25rem;
-    background-color: rgba(151, 166, 195, 0.15);
+    background-color: rgba(75, 139, 244, 0.15);
+    border: 1px solid rgba(75, 139, 244, 0.3);
 }
 .source-label {
     font-weight: bold;
-    color: #9CBBE9;
+    color: #4B8BF4;
+}
+
+/* Mejoras para mejor legibilidad en tema oscuro */
+h1, h2, h3 {
+    color: #FFFFFF !important;
+}
+.stTextInput > div > div > input {
+    color: #FAFAFA;
+    background-color: #262730;
+}
+.stButton > button {
+    background-color: #4B8BF4;
+    color: white;
+}
+.stSelectbox > div > div > div {
+    background-color: #262730;
+    color: #FAFAFA;
 }
 </style>
 """, unsafe_allow_html=True)
