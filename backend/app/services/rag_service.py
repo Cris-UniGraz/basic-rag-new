@@ -21,6 +21,7 @@ from app.core.coroutine_manager import coroutine_manager
 from app.core.metrics import measure_time, EMBEDDING_RETRIEVAL_DURATION
 from app.core.cache import cache_result
 from app.utils.loaders import load_documents
+from app.utils.glossary import find_glossary_terms, find_glossary_terms_with_explanation
 from app.models.vector_store import vector_store_manager
 from app.models.document_store import document_store_manager
 
@@ -348,35 +349,47 @@ class RAGService:
     
     @coroutine_manager.coroutine_handler(timeout=30, task_type="translation")
     async def translate_query(
-        self, 
-        query: str, 
-        source_language: str, 
+        self,
+        query: str,
+        source_language: str,
         target_language: str
     ) -> str:
         """
         Translate a query from one language to another.
-        
+
         Args:
             query: Query to translate
             source_language: Source language
             target_language: Target language
-            
+
         Returns:
             Translated query
         """
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", f"Translate the following text from {source_language} to {target_language}. "
-             "Only provide the translation, no explanations."),
-            ("human", "{query}")
-        ])
-         
+        # Check if query contains glossary terms
+        matching_terms = find_glossary_terms(query, source_language)
+
+        if not matching_terms:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"Translate the following text from {source_language} to {target_language}. "
+                "Only provide the translation, no explanations."),
+                ("human", "{query}")
+            ])
+        else:
+            # If glossary terms were found, instruct not to translate them
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"Translate the following text from {source_language} to {target_language}. "
+                f"Only provide the translation, no explanations. If these terms {matching_terms} appear "
+                f"in the text to be translated, do not translate them but use them as they are written."),
+                ("human", "{query}")
+            ])
+
         chain = prompt | self.llm_provider | StrOutputParser()
         translated_query = await chain.ainvoke({"query": query})
-        
+
         if settings.SHOW_INTERNAL_MESSAGES:
             logger.debug(f"Translated query:\nOriginal ({source_language}): {query}\n"
                         f"Translated ({target_language}): {translated_query}")
-        
+
         return translated_query
     
     @cache_result(prefix="rag_results", ttl=3600)
@@ -512,30 +525,64 @@ class RAGService:
                 filtered_context.append(document)
                 sources_for_cache.append(document.metadata)
             
+            # Check if query contains glossary terms
+            matching_terms = find_glossary_terms_with_explanation(query, language)
+
             # Create prompt template
-            prompt_template = ChatPromptTemplate.from_template(
-                """
-                You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
-                Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
-                Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                If the CONTEXT does not contain information to answer the QUESTION, try to answer the question with your knowledge, but only if the answer is appropriate.
-                Give detailed answers in {language}.
+            if not matching_terms:
+                prompt_template = ChatPromptTemplate.from_template(
+                    """
+                    You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                    Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                    Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                    If the CONTEXT does not contain information to answer the QUESTION, try to answer the question with your knowledge, but only if the answer is appropriate.
+                    Give detailed answers in {language}.
 
-                QUERY: ```{question}```
+                    QUERY: ```{question}```
 
-                CONTEXT: ```{context}```
-                """
-            )
+                    CONTEXT: ```{context}```
+                    """
+                )
+            else:
+                # Include glossary terms and their explanations in the prompt
+                relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                           for term, explanation in matching_terms])
+
+                prompt_template = ChatPromptTemplate.from_template(
+                    """
+                    You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                    Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                    Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                    If the CONTEXT does not contain information to answer the QUESTION, try to answer the question with your knowledge, but only if the answer is appropriate.
+
+                    The following terms from the query have specific meanings:
+                    {glossary}
+
+                    Please consider these specific meanings when responding. Give detailed answers in {language}.
+
+                    QUERY: ```{question}```
+
+                    CONTEXT: ```{context}```
+                    """
+                )
             
             # Create processing chain
             chain = prompt_template | self.llm_provider | StrOutputParser()
-            
+
             # Generate response
-            response = await chain.ainvoke({
-                "context": filtered_context,
-                "language": language,
-                "question": query
-            })
+            if matching_terms:
+                response = await chain.ainvoke({
+                    "context": filtered_context,
+                    "language": language,
+                    "question": query,
+                    "glossary": relevant_glossary
+                })
+            else:
+                response = await chain.ainvoke({
+                    "context": filtered_context,
+                    "language": language,
+                    "question": query
+                })
             
             processing_time = time.time() - start_time
             
