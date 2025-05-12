@@ -6,8 +6,9 @@ from loguru import logger
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, FewShotChatMessagePromptTemplate
+from pydantic import BaseModel, Field
 from langchain_milvus import Milvus
 from langchain.chains import create_history_aware_retriever, HypotheticalDocumentEmbedder
 from langchain.retrievers import EnsembleRetriever, ParentDocumentRetriever
@@ -447,6 +448,272 @@ class RAGService:
             logger.error(f"Error creating BM25Retriever: {e}")
             return None
 
+    @coroutine_manager.coroutine_handler(timeout=30, task_type="query_generation")
+    async def generate_step_back_query(
+        self,
+        query: str,
+        language: str = "german"
+    ) -> str:
+        """
+        Generate a more generic step-back query from the original query.
+
+        A step-back query generalizes the question to help retrieve broader context
+        that might be helpful to answer specific questions.
+
+        Args:
+            query: Original user query
+            language: Language of the query and response
+
+        Returns:
+            A more generic version of the query
+        """
+        # Define few-shot examples
+        examples = [
+            {
+                "input": "Could the members of The Police perform lawful arrests?",
+                "output": "What can the members of The Police do?",
+            },
+            {
+                "input": "When was the UNIGRAzcard system introduced?",
+                "output": "What is the history of the UNIGRAzcard system?",
+            },
+        ]
+
+        # Create few-shot prompt template
+        example_prompt = ChatPromptTemplate.from_messages([
+            ("human", "{input}"),
+            ("ai", "{output}"),
+        ])
+
+        few_shot_prompt = FewShotChatMessagePromptTemplate(
+            example_prompt=example_prompt,
+            examples=examples,
+        )
+
+        # Check if query contains glossary terms
+        matching_terms = find_glossary_terms_with_explanation(query, language)
+
+        if not matching_terms:
+            # Standard prompt if no glossary terms
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    """You are an expert at world knowledge. Your task is to step back and paraphrase
+                    a question to a more generic step-back question, which is easier to answer.
+                    Please note that the question has been asked in the context of the University of Graz.
+                    Give the generic step-back question in {language}. Here are a few examples:""",
+                ),
+                few_shot_prompt,
+                ("user", "{question}"),
+            ])
+        else:
+            # Include glossary terms in prompt
+            relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                       for term, explanation in matching_terms])
+
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    f"""You are an expert at world knowledge. Your task is to step back and paraphrase
+                    a question to a more generic step-back question, which is easier to answer.
+
+                    The following terms from the question have specific meanings:
+                    {relevant_glossary}
+
+                    Please consider these specific meanings when generating the step-back question.
+                    Please note that the question has been asked in the context of the University of Graz.
+                    Give the generic step-back question in {language}. Here are a few examples:""",
+                ),
+                few_shot_prompt,
+                ("user", "{question}"),
+            ])
+
+        # Create and execute chain
+        chain = prompt | self.llm_provider | StrOutputParser()
+        step_back_query = await chain.ainvoke({"language": language, "question": query})
+
+        if settings.SHOW_INTERNAL_MESSAGES:
+            logger.debug(f"Step-back query generation:\nOriginal: {query}\n"
+                       f"Step-back: {step_back_query}")
+
+        return step_back_query
+
+    @coroutine_manager.coroutine_handler(timeout=30, task_type="multi_query")
+    async def generate_all_queries_in_one_call(
+        self,
+        query: str,
+        language: str = "german"
+    ) -> Dict[str, str]:
+        """
+        Generate all necessary queries in a single LLM call for efficiency.
+
+        This method generates:
+        - The original query
+        - A translated version of the query (to the other language)
+        - A step-back version of the original query
+        - A step-back version of the translated query
+
+        Args:
+            query: Original user query
+            language: Language of the original query
+
+        Returns:
+            Dictionary containing all generated queries
+        """
+        # Determine source and target languages
+        source_lang = "German" if language.lower() == "german" else "English"
+        target_lang = "English" if language.lower() == "german" else "German"
+        source_lang_lower = source_lang.lower()
+        target_lang_lower = target_lang.lower()
+
+        # Get glossary terms
+        matching_terms = find_glossary_terms_with_explanation(query, language)
+
+        if not matching_terms:
+            # Standard prompt if no glossary terms found
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    f"""You are a multilingual language expert specialized in German and English.
+                    I will give you a question in {source_lang}. Perform the following steps in one go:
+
+                    1. If the question is in {source_lang}, translate it to {target_lang} accurately.
+                    2. Create a more generic "step-back" version of the original {source_lang} question.
+                    3. Create a more generic "step-back" version of the translated {target_lang} question.
+
+                    A "step-back" question is more generic and broader than the original question, making it easier to answer.
+                    For example:
+                    - Original: "Could the members of The Police perform lawful arrests?"
+                    - Step-back: "What can the members of The Police do?"
+
+                    Respond in JSON format with these exact keys:
+                    {{{{
+                        "original_{source_lang_lower}": "The original question",
+                        "translated_{target_lang_lower}": "The translated question",
+                        "step_back_{source_lang_lower}": "The step-back version of the original question",
+                        "step_back_{target_lang_lower}": "The step-back version of the translated question"
+                    }}}}
+                    """
+                ),
+                ("human", "{question}")
+            ])
+        else:
+            # Include glossary terms in prompt
+            relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                         for term, explanation in matching_terms])
+
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    f"""You are a multilingual language expert specialized in German and English.
+                    I will give you a question in {source_lang}. Perform the following steps in one go:
+
+                    1. If the question is in {source_lang}, translate it to {target_lang} accurately.
+                    2. Create a more generic "step-back" version of the original {source_lang} question.
+                    3. Create a more generic "step-back" version of the translated {target_lang} question.
+
+                    The following terms from the question have specific meanings in the context of the University of Graz:
+                    {relevant_glossary}
+
+                    IMPORTANT: When translating, preserve these specific terms exactly as they appear. Do not translate them.
+                    Consider these specific meanings when generating step-back questions.
+
+                    A "step-back" question is more generic and broader than the original question, making it easier to answer.
+                    For example:
+                    - Original: "Could the members of The Police perform lawful arrests?"
+                    - Step-back: "What can the members of The Police do?"
+
+                    Respond in JSON format with these exact keys:
+                    {{{{
+                        "original_{source_lang_lower}": "The original question",
+                        "translated_{target_lang_lower}": "The translated question",
+                        "step_back_{source_lang_lower}": "The step-back version of the original question",
+                        "step_back_{target_lang_lower}": "The step-back version of the translated question"
+                    }}}}
+                    """
+                ),
+                ("human", "{question}")
+            ])
+
+        # Define Pydantic model for JSON validation
+        class QueryOutput(BaseModel):
+            original_german: Optional[str] = Field(default=None)
+            original_english: Optional[str] = Field(default=None)
+            translated_english: Optional[str] = Field(default=None)
+            translated_german: Optional[str] = Field(default=None)
+            step_back_german: str = Field(...)
+            step_back_english: str = Field(...)
+
+        # Create JSON parser
+        parser = JsonOutputParser(pydantic_object=QueryOutput)
+
+        # Create chain
+        chain = prompt | self.llm_provider | parser
+
+        try:
+            # Invoke chain and get results
+            result = await chain.ainvoke({"question": query})
+
+            if settings.SHOW_INTERNAL_MESSAGES:
+                logger.debug(f"Multi-query generation results for: {query}")
+                # Handle both Pydantic models and regular dictionaries for debugging
+                if hasattr(result, 'model_dump'):
+                    result_items = result.model_dump().items()
+                else:
+                    result_items = result.items()
+
+                for key, value in result_items:
+                    if value:
+                        logger.debug(f"- {key}: {value}")
+
+            # Handle both Pydantic models and regular dictionaries
+            if hasattr(result, 'model_dump'):  # It's a Pydantic object
+                result_dict = result.model_dump()
+            else:  # It's a dictionary
+                result_dict = result
+
+            logger.debug(f"Query generation result type: {type(result)}")
+
+            # Format the result based on original language using dictionary access
+            if language.lower() == "german":
+                return {
+                    "query_de": result_dict.get("original_german", query),
+                    "query_en": result_dict.get("translated_english", ""),
+                    "step_back_query_de": result_dict.get("step_back_german", ""),
+                    "step_back_query_en": result_dict.get("step_back_english", "")
+                }
+            else:
+                return {
+                    "query_en": result_dict.get("original_english", query),
+                    "query_de": result_dict.get("translated_german", ""),
+                    "step_back_query_en": result_dict.get("step_back_english", ""),
+                    "step_back_query_de": result_dict.get("step_back_german", "")
+                }
+
+        except Exception as e:
+            logger.error(f"Error generating multiple queries: {e}")
+            # Fallback to individual methods if combined approach fails
+            if language.lower() == "german":
+                translated = await self.translate_query(query, "German", "English")
+                step_back_de = await self.generate_step_back_query(query, "german")
+                step_back_en = await self.generate_step_back_query(translated, "english")
+                return {
+                    "query_de": query,
+                    "query_en": translated,
+                    "step_back_query_de": step_back_de,
+                    "step_back_query_en": step_back_en
+                }
+            else:
+                translated = await self.translate_query(query, "English", "German")
+                step_back_en = await self.generate_step_back_query(query, "english")
+                step_back_de = await self.generate_step_back_query(translated, "german")
+                return {
+                    "query_en": query,
+                    "query_de": translated,
+                    "step_back_query_en": step_back_en,
+                    "step_back_query_de": step_back_de
+                }
+
     async def get_hyde_retriever(
         self,
         embedding_model: Any,
@@ -666,72 +933,93 @@ class RAGService:
     ) -> Dict[str, Any]:
         """
         Process queries in multiple languages and combine results.
-        
-        This method handles cases where one or both retrievers might be None,
-        which happens when collections for specific languages don't exist.
-        
+
+        This method handles various query enhancement techniques:
+        - Multi-language processing (German and English)
+        - Step-back queries for broader context retrieval
+        - Glossary-aware query processing
+
         Args:
             query: User query
             retriever_de: German retriever (can be None if collection doesn't exist)
             retriever_en: English retriever (can be None if collection doesn't exist)
             chat_history: Chat history
             language: Primary language for the response
-        """
-        """
-        Process queries in multiple languages and combine results.
-        
-        Args:
-            query: User query
-            retriever_de: German retriever
-            retriever_en: English retriever
-            chat_history: Chat history
-            language: Primary language for the response
-            
+
         Returns:
             Dictionary with response and metadata
         """
         try:
             start_time = time.time()
             sources_for_cache = []
-            
-            # Process queries in appropriate languages
-            if language.lower() == "german":
-                query_de = query
-                query_en = await self.translate_query(query, "German", "English")
-            else:
-                query_en = query
-                query_de = await self.translate_query(query, "English", "German")
-            
+
+            # Generate all query variations in one LLM call (original, translated, step-back in both languages)
+            logger.info(f"Generating query variations for: '{query}'")
+            queries = await self.generate_all_queries_in_one_call(query, language)
+
+            # Extract all query variations
+            query_de = queries["query_de"]
+            query_en = queries["query_en"]
+            step_back_query_de = queries["step_back_query_de"]
+            step_back_query_en = queries["step_back_query_en"]
+
+            logger.debug(f"Generated queries: Original DE: '{query_de}', Original EN: '{query_en}', "
+                       f"Step-back DE: '{step_back_query_de}', Step-back EN: '{step_back_query_en}'")
+
             # Retrieve and rerank in parallel, but only for retrievers that exist
             retrieval_tasks = []
-            
-            # Add German retriever task if it exists
+
+            # Add German retriever tasks if it exists
             if retriever_de is not None:
-                logger.info("Adding German retriever task")
+                logger.info("Adding German retriever tasks (original + step-back)")
+                # Original German query
                 retrieval_tasks.append(
                     self.retrieve_context_reranked(
-                        query_de, 
-                        retriever_de, 
-                        settings.GERMAN_COHERE_RERANKING_MODEL, 
-                        chat_history, 
+                        query_de,
+                        retriever_de,
+                        settings.GERMAN_COHERE_RERANKING_MODEL,
+                        chat_history,
                         "german"
                     )
                 )
+                # Step-back German query
+                if step_back_query_de:
+                    retrieval_tasks.append(
+                        self.retrieve_context_reranked(
+                            step_back_query_de,
+                            retriever_de,
+                            settings.GERMAN_COHERE_RERANKING_MODEL,
+                            chat_history,
+                            "german"
+                        )
+                    )
             else:
                 logger.warning("German retriever is None, skipping German retrieval")
-                
-            # Add English retriever task if it exists
+
+            # Add English retriever tasks if it exists
             if retriever_en is not None:
-                logger.info("Adding English retriever task")
+                logger.info("Adding English retriever tasks (original + step-back)")
+                # Original English query
                 retrieval_tasks.append(
                     self.retrieve_context_reranked(
-                        query_en, 
-                        retriever_en, 
-                        settings.ENGLISH_COHERE_RERANKING_MODEL, 
-                        chat_history, 
+                        query_en,
+                        retriever_en,
+                        settings.ENGLISH_COHERE_RERANKING_MODEL,
+                        chat_history,
                         "english"
                     )
                 )
+                # Step-back English query
+                if step_back_query_en:
+                    retrieval_tasks.append(
+                        self.retrieve_context_reranked(
+                            step_back_query_en,
+                            retriever_en,
+                            settings.ENGLISH_COHERE_RERANKING_MODEL,
+                            chat_history,
+                            "english"
+                        )
+                    )
             else:
                 logger.warning("English retriever is None, skipping English retrieval")
             
