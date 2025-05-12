@@ -288,8 +288,8 @@ async def chat(
         
         # Clean up resources in background
         if background_tasks:
-            background_tasks.add_task(asyncio.create_task, coroutine_manager.cleanup())
-        
+            background_tasks.add_task(coroutine_manager.cleanup)
+
         return chat_response
         
     except HTTPException as he:

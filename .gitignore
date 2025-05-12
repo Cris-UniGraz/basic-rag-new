@@ -1,7 +1,7 @@
 # Environment variables and secrets
 .env
 *.env
-.env.*
+*.env.*
 !.env.example
 
 # Python artifacts
@@ -9,7 +9,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+*.Python
 build/
 develop-eggs/
 dist/
@@ -36,9 +36,9 @@ pip-delete-this-directory.txt
 # Unit test / coverage reports
 htmlcov/
 .tox/
-.coverage
-.coverage.*
-.cache
+*.coverage
+*.coverage.*
+*.cache
 nosetests.xml
 coverage.xml
 *.cover
@@ -90,3 +90,6 @@ huggingface/
 *.pkl
 *.joblib
 *.bin
+
+*.Identifier
+*.example
