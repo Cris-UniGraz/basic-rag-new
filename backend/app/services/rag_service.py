@@ -12,6 +12,7 @@ from langchain_milvus import Milvus
 from langchain.chains import create_history_aware_retriever, HypotheticalDocumentEmbedder
 from langchain.retrievers import EnsembleRetriever, ParentDocumentRetriever
 from langchain.retrievers.multi_query import MultiQueryRetriever
+from langchain_community.retrievers import BM25Retriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import cohere
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -221,19 +222,34 @@ class RAGService:
                 top_k
             )
 
+            # Create BM25 retriever for keyword search
+            bm25_retriever = self.get_bm25_retriever(collection_name, top_k)
+
             # Setup retrievers and weights
             retrievers = [base_retriever, parent_retriever, multi_query_retriever]
-            weights = [0.2, 0.2, 0.4]
+            weights = [0.15, 0.15, 0.4]
 
-            # Add HyDE retriever if it was successfully created
+            # Add HyDE retriever if available
             if hyde_retriever:
                 retrievers.append(hyde_retriever)
-                weights.append(0.2)
+                weights.append(0.15)
                 logger.info(f"Added HyDE retriever to ensemble for {collection_name}")
             else:
                 # Redistribute weights if HyDE is not available
-                weights = [0.25, 0.25, 0.5]
+                weights = [0.2, 0.2, 0.45]
                 logger.warning(f"HyDE retriever not available for {collection_name}")
+
+            # Add BM25 retriever if available
+            if bm25_retriever:
+                retrievers.append(bm25_retriever)
+                # Adjust weights based on which retrievers are available
+                if hyde_retriever:
+                    weights.append(0.15)  # Final weights: 0.15, 0.15, 0.4, 0.15, 0.15
+                else:
+                    weights.append(0.15)  # Final weights: 0.2, 0.2, 0.45, 0.15
+                logger.info(f"Added BM25 retriever to ensemble for {collection_name}")
+            else:
+                logger.warning(f"BM25 retriever not available for {collection_name}")
 
             # Create ensemble retriever with all retrievers
             ensemble_retriever = EnsembleRetriever(
@@ -372,6 +388,64 @@ class RAGService:
         )
         
         return retriever
+
+    def get_bm25_retriever(
+        self,
+        collection_name: str,
+        top_k: int = 3
+    ) -> BM25Retriever:
+        """
+        Create a BM25 retriever for keyword-based search.
+
+        BM25 is a ranking function used to rank documents based on keyword matches
+        without relying on embeddings, making it complementary to vector search.
+
+        Args:
+            collection_name: The name of the parent document collection
+            top_k: Number of documents to retrieve
+
+        Returns:
+            A configured BM25Retriever or None if no documents are available
+        """
+        try:
+            # Get documents from the parent collection in document store
+            parent_collection_name = f"{collection_name}_parents"
+            docstore = document_store_manager.get_mongo_store(parent_collection_name)
+
+            # Get document IDs from the store using yield_keys() instead of list_doc_ids()
+            try:
+                keys = list(docstore.yield_keys())
+
+                if not keys:
+                    logger.warning(f"No documents found in collection '{parent_collection_name}' for BM25")
+                    return None
+
+                # Retrieve documents
+                docs = docstore.mget(keys)
+            except Exception as e:
+                logger.error(f"Error accessing document keys: {e}")
+                return None
+
+            # Filter valid documents
+            valid_docs = [
+                doc for doc in docs
+                if doc and hasattr(doc, 'page_content') and hasattr(doc, 'metadata')
+            ]
+
+            if not valid_docs:
+                logger.warning("No valid documents found for BM25Retriever")
+                return None
+
+            # Create BM25Retriever
+            retriever = BM25Retriever.from_documents(valid_docs)
+            retriever.k = top_k
+
+            logger.info(f"Created BM25Retriever for collection '{collection_name}' with {len(valid_docs)} documents")
+            return retriever
+
+        except Exception as e:
+            logger.error(f"Error creating BM25Retriever: {e}")
+            return None
 
     async def get_hyde_retriever(
         self,
