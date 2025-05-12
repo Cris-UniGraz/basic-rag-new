@@ -6,8 +6,9 @@ A containerized Retrieval-Augmented Generation (RAG) system with support for Ger
 
 - **Multi-language Support**: Process and query documents in both German and English
 - **Multiple Document Types**: Support for PDF, DOCX, XLSX, TXT, CSV, Markdown, and more
-- **Advanced Retrieval**: Ensemble retrieval combining vector search and parent-child document retrieval
+- **Advanced Retrieval**: Ensemble retrieval combining vector search, parent-child document retrieval, multi-query retrieval, and hypothetical document embedding (HyDE)
 - **Cross-Language Queries**: Translates queries between languages to improve retrieval
+- **Glossary Integration**: Domain-specific glossary for improved understanding of technical terms
 - **Document Reranking**: Uses Cohere's reranking models to improve retrieval precision
 - **Asynchronous Processing**: Fast response times with optimized coroutine management
 - **Memory Management**: Optimized for handling large document collections

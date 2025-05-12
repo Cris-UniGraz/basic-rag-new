@@ -9,8 +9,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_milvus import Milvus
-from langchain.chains import create_history_aware_retriever
+from langchain.chains import create_history_aware_retriever, HypotheticalDocumentEmbedder
 from langchain.retrievers import EnsembleRetriever, ParentDocumentRetriever
+from langchain.retrievers.multi_query import MultiQueryRetriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import cohere
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -22,6 +23,7 @@ from app.core.metrics import measure_time, EMBEDDING_RETRIEVAL_DURATION
 from app.core.cache import cache_result
 from app.utils.loaders import load_documents
 from app.utils.glossary import find_glossary_terms, find_glossary_terms_with_explanation
+from app.utils.output_parsers import LineListOutputParser
 from app.models.vector_store import vector_store_manager
 from app.models.document_store import document_store_manager
 
@@ -29,10 +31,12 @@ from app.models.document_store import document_store_manager
 class RAGService:
     """
     Service for Retrieval-Augmented Generation operations.
-    
+
     Features:
     - Multi-language support (German and English)
     - Ensemble retrieval for improved recall
+    - MultiQuery retrieval for generating multiple query variations
+    - Glossary-aware query processing
     - Reranking for improved precision
     - Caching for performance
     - Memory and batch processing optimizations
@@ -205,14 +209,36 @@ class RAGService:
             
             # Configure base retriever
             base_retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
-            
-            # Create ensemble retriever
+
+            # Create multi-query retriever
+            multi_query_retriever = await self.get_multi_query_retriever(parent_retriever, language)
+
+            # Create HyDE retriever
+            hyde_retriever = await self.get_hyde_retriever(
+                embedding_model,
+                collection_name,
+                language,
+                top_k
+            )
+
+            # Setup retrievers and weights
+            retrievers = [base_retriever, parent_retriever, multi_query_retriever]
+            weights = [0.2, 0.2, 0.4]
+
+            # Add HyDE retriever if it was successfully created
+            if hyde_retriever:
+                retrievers.append(hyde_retriever)
+                weights.append(0.2)
+                logger.info(f"Added HyDE retriever to ensemble for {collection_name}")
+            else:
+                # Redistribute weights if HyDE is not available
+                weights = [0.25, 0.25, 0.5]
+                logger.warning(f"HyDE retriever not available for {collection_name}")
+
+            # Create ensemble retriever with all retrievers
             ensemble_retriever = EnsembleRetriever(
-                retrievers=[
-                    base_retriever,
-                    parent_retriever
-                ],
-                weights=[0.5, 0.5],
+                retrievers=retrievers,
+                weights=weights,
                 c=60,
                 batch_config={
                     "max_concurrency": max_concurrency
@@ -346,7 +372,170 @@ class RAGService:
         )
         
         return retriever
-    
+
+    async def get_hyde_retriever(
+        self,
+        embedding_model: Any,
+        collection_name: str,
+        language: str = "german",
+        top_k: int = 3
+    ) -> Any:
+        """
+        Create a HyDE retriever with glossary-aware document generation.
+
+        The Hypothetical Document Embedder (HyDE) generates a synthetic document that could
+        hypothetically answer the query, then embeds that document to find similar real documents.
+
+        Args:
+            embedding_model: Base embedding model to use
+            collection_name: Name of the collection to search in
+            language: Language for document generation
+            top_k: Number of documents to retrieve
+
+        Returns:
+            A configured retriever using HyDE embeddings
+        """
+        def create_hyde_chain(query: str):
+            # Check if query contains glossary terms
+            matching_terms = find_glossary_terms_with_explanation(query, language)
+
+            if not matching_terms:
+                # Basic prompt for document generation
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", f"Please write a passage in {language} to answer the question."),
+                    ("human", "{question}")
+                ])
+            else:
+                # Include glossary terms in the prompt
+                relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                          for term, explanation in matching_terms])
+
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", f"""Please write a passage in {language} to answer the question.
+                    The following terms from the question have specific meanings:
+
+                    {relevant_glossary}
+
+                    Consider these meanings when writing your passage."""),
+                    ("human", "{question}")
+                ])
+
+            # Create chain to generate hypothetical document
+            chain = prompt | self.llm_provider | StrOutputParser()
+            return chain
+
+        # Custom HyDE embedder that's aware of glossary terms
+        class GlossaryAwareHyDEEmbedder(HypotheticalDocumentEmbedder):
+            def embed_query(self, query: str, *args, **kwargs):
+                # Update the chain for each query to include potential glossary terms
+                self.llm_chain = create_hyde_chain(query)
+
+                if settings.SHOW_INTERNAL_MESSAGES:
+                    # Log the prompt and response for debugging
+                    try:
+                        hypothetical_doc = self.llm_chain.invoke({"question": query})
+                        logger.debug(f"HyDE original query: {query}")
+                        logger.debug(f"HyDE generated document: {hypothetical_doc[:200]}...")
+                    except Exception as e:
+                        logger.error(f"Error generating HyDE document: {e}")
+
+                # Call the parent class implementation with the updated chain
+                return super().embed_query(query, *args, **kwargs)
+
+        # Initialize with a placeholder chain that will be updated for each query
+        hyde_embeddings = GlossaryAwareHyDEEmbedder(
+            llm_chain=create_hyde_chain(""),  # Placeholder
+            base_embeddings=embedding_model
+        )
+
+        # Get vector store with HyDE embeddings
+        vector_store = vector_store_manager.get_collection(collection_name, hyde_embeddings)
+        if not vector_store:
+            logger.warning(f"Collection {collection_name} not found for HyDE retriever")
+            return None
+
+        # Create retriever
+        retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
+        return retriever
+
+    async def get_multi_query_retriever(
+        self,
+        base_retriever: Any,
+        language: str = "german",
+    ) -> MultiQueryRetriever:
+        """
+        Create a glossary-aware multi-query retriever.
+
+        This retriever generates multiple variations of the user query by prompting the LLM,
+        taking into account specialized glossary terms if present in the query.
+
+        Args:
+            base_retriever: The base retriever to use for document retrieval
+            language: The language to use for generating query variations
+
+        Returns:
+            A configured MultiQueryRetriever
+        """
+        output_parser = LineListOutputParser()
+
+        def create_multi_query_chain(query: str):
+            # Check if query contains glossary terms
+            matching_terms = find_glossary_terms_with_explanation(query, language)
+
+            if not matching_terms:
+                # Standard prompt if no glossary terms found
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", f"""You are an AI language model assistant. Your task is to generate
+                    five different versions of the given user question in {language} to retrieve
+                    relevant documents. By generating multiple perspectives on the user question,
+                    your goal is to help overcome some limitations of distance-based similarity search.
+                    Provide these alternative questions separated by newlines."""),
+                    ("human", "{question}")
+                ])
+            else:
+                # Include glossary terms in prompt if found
+                relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                           for term, explanation in matching_terms])
+
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", f"""You are an AI language model assistant. Your task is to generate
+                    five different versions of the given user question in {language} to retrieve
+                    relevant documents. The following terms from the question have specific meanings:
+
+                    {relevant_glossary}
+
+                    Generate questions that incorporate these specific meanings. Provide these
+                    alternative questions separated by newlines."""),
+                    ("human", "{question}")
+                ])
+
+            # Create processing chain
+            chain = prompt | self.llm_provider | output_parser
+            return chain
+
+        # Create custom MultiQueryRetriever that's aware of glossary terms
+        class GlossaryAwareMultiQueryRetriever(MultiQueryRetriever):
+            async def _aget_relevant_documents(self, query: str, *, run_manager=None):
+                # Update the chain for each query to include potential glossary terms
+                self.llm_chain = create_multi_query_chain(query)
+
+                if settings.SHOW_INTERNAL_MESSAGES:
+                    # Log the prompt and response for debugging
+                    logger.debug(f"MultiQueryRetriever original query: {query}")
+                    generated_queries = await self.llm_chain.ainvoke({"question": query})
+                    logger.debug(f"MultiQueryRetriever generated queries: {generated_queries}")
+
+                # Call the parent class implementation with the updated chain
+                return await super()._aget_relevant_documents(query, run_manager=run_manager)
+
+        # Initialize with a placeholder chain that will be updated for each query
+        retriever = GlossaryAwareMultiQueryRetriever(
+            retriever=base_retriever,
+            llm_chain=create_multi_query_chain("")
+        )
+
+        return retriever
+
     @coroutine_manager.coroutine_handler(timeout=30, task_type="translation")
     async def translate_query(
         self,
