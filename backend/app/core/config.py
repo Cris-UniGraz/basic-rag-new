@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     ADVANCED_CACHE_MAX_SIZE: int = Field(default=1000)  # Máximo número de entradas en caché
     ADVANCED_CACHE_TTL_HOURS: int = Field(default=24)  # Tiempo de vida en horas
     ADVANCED_CACHE_SIMILARITY_THRESHOLD: float = Field(default=0.85)  # Umbral para considerar consultas similares
+    
+    # Query Optimization Settings
+    QUERY_OPTIMIZATION_ENABLED: bool = Field(default=True)
+    QUERY_SIMILARITY_THRESHOLD: float = Field(default=0.75)  # Umbral de similitud para consultas
+    QUERY_HISTORY_SIZE: int = Field(default=100)  # Tamaño del historial de consultas
+    APPLY_QUERY_REWRITING: bool = Field(default=True)  # Reescribir consultas para mayor precisión
+    SEMANTIC_CACHING_ENABLED: bool = Field(default=True)  # Caché basado en similitud semántica
 
     # System Parameters
     USER_AGENT: str = Field(default="rag_assistant")

@@ -926,7 +926,6 @@ class RAGService:
 
         return translated_query
     
-    # Reemplazar la caché nativa con optimizador de consultas
     async def process_queries_and_combine_results(
         self,
         query: str,
@@ -982,12 +981,48 @@ class RAGService:
                 embedding_model
             )
             
-            # Si el optimizador encuentra una respuesta en caché
+            # Procesar según el origen de la respuesta del optimizador
             if optimized_query['source'] == 'cache':
+                # Caché exacta
+                logger.info("Exact cache hit, returning cached response")
                 return {
                     'response': optimized_query['result']['response'],
                     'sources': optimized_query['result'].get('sources', []),
                     'from_cache': True,
+                    'processing_time': 0.0
+                }
+            elif optimized_query['source'] == 'semantic_cache':
+                # Caché semántico (coincidencia por similitud)
+                match_info = optimized_query['result'].get('semantic_match', {})
+                similarity = match_info.get('similarity', 0)
+                logger.info(f"Semantic cache hit with similarity: {similarity:.4f}")
+                
+                self.metrics_manager.metrics['query_similarity_scores'] = \
+                    self.metrics_manager.metrics.get('query_similarity_scores', []) + [similarity]
+                
+                # Si hay información de coincidencia semántica y está habilitado el modo debug
+                original_response = optimized_query['result']['response']
+                if match_info and settings.SHOW_INTERNAL_MESSAGES:
+                    # Añadir nota sobre la coincidencia semántica solo en modo debug
+                    modified_response = (
+                        f"{original_response}\n\n"
+                        f"[Debug: Respuesta generada para pregunta semánticamente similar: "
+                        f"'{match_info.get('matched_query', '')}' "
+                        f"con similaridad: {similarity:.4f}]"
+                    )
+                    return {
+                        'response': modified_response,
+                        'sources': optimized_query['result'].get('sources', []),
+                        'from_cache': True,
+                        'semantic_match': match_info,
+                        'processing_time': 0.0
+                    }
+                
+                return {
+                    'response': original_response,
+                    'sources': optimized_query['result'].get('sources', []),
+                    'from_cache': True,
+                    'semantic_match': match_info,
                     'processing_time': 0.0
                 }
 
