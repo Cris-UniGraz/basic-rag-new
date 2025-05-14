@@ -266,6 +266,19 @@ class RAGService:
                 }
             )
             
+            # Registrar métricas sobre retrievers utilizados
+            retriever_info = {
+                "num_retrievers": len(retrievers),
+                "types": [r.__class__.__name__ for r in retrievers],
+                "collection": collection_name
+            }
+            self.metrics_manager.log_operation(
+                operation_type="ensemble_retriever_setup", 
+                duration=0, 
+                success=True, 
+                details=retriever_info
+            )
+            
             # Configure prompt for history-aware retrieval
             contextualize_q_system_prompt = (
                 f"Given a chat history and the latest user question which might reference "
@@ -960,7 +973,14 @@ class RAGService:
             cached_result = self.query_optimizer.get_llm_response(query, language)
             if cached_result:
                 logger.info(f"Cache hit for query: '{query}'")
-                self.metrics_manager.metrics['cache_hits'] += 1
+                # Registrar métricas más detalladas
+                self.metrics_manager.log_rag_query(
+                    query=query,
+                    processing_time=0.0,
+                    num_sources=len(cached_result.get('sources', [])),
+                    from_cache=True,
+                    language=language
+                )
                 return {
                     'response': cached_result['response'],
                     'sources': cached_result['sources'],
@@ -985,9 +1005,27 @@ class RAGService:
             if optimized_query['source'] == 'cache':
                 # Caché exacta
                 logger.info("Exact cache hit, returning cached response")
+                
+                # Registrar métricas detalladas
+                self.metrics_manager.log_query_optimization(
+                    processing_time=0.0,
+                    was_cached=True,
+                    cache_type="exact"
+                )
+                
+                # Registrar la consulta RAG completa
+                sources = optimized_query['result'].get('sources', [])
+                self.metrics_manager.log_rag_query(
+                    query=query,
+                    processing_time=0.0,
+                    num_sources=len(sources),
+                    from_cache=True,
+                    language=language
+                )
+                
                 return {
                     'response': optimized_query['result']['response'],
-                    'sources': optimized_query['result'].get('sources', []),
+                    'sources': sources,
                     'from_cache': True,
                     'processing_time': 0.0
                 }
@@ -997,8 +1035,25 @@ class RAGService:
                 similarity = match_info.get('similarity', 0)
                 logger.info(f"Semantic cache hit with similarity: {similarity:.4f}")
                 
-                self.metrics_manager.metrics['query_similarity_scores'] = \
-                    self.metrics_manager.metrics.get('query_similarity_scores', []) + [similarity]
+                # Registrar métricas más detalladas
+                self.metrics_manager.log_query_optimization(
+                    processing_time=0.0,
+                    was_cached=True,
+                    cache_type="semantic"
+                )
+                
+                # También registrar puntuación de similitud
+                self.metrics_manager.metrics['query_similarity_scores'].append(similarity)
+                
+                # Registrar la consulta RAG completa
+                sources = optimized_query['result'].get('sources', [])
+                self.metrics_manager.log_rag_query(
+                    query=query,
+                    processing_time=0.0,
+                    num_sources=len(sources),
+                    from_cache=True,
+                    language=language
+                )
                 
                 # Si hay información de coincidencia semántica y está habilitado el modo debug
                 original_response = optimized_query['result']['response']
@@ -1012,7 +1067,7 @@ class RAGService:
                     )
                     return {
                         'response': modified_response,
-                        'sources': optimized_query['result'].get('sources', []),
+                        'sources': sources,
                         'from_cache': True,
                         'semantic_match': match_info,
                         'processing_time': 0.0
@@ -1020,7 +1075,7 @@ class RAGService:
                 
                 return {
                     'response': original_response,
-                    'sources': optimized_query['result'].get('sources', []),
+                    'sources': sources,
                     'from_cache': True,
                     'semantic_match': match_info,
                     'processing_time': 0.0
@@ -1210,6 +1265,30 @@ class RAGService:
             
             processing_time = time.time() - start_time
             
+            # Registrar métricas detalladas de la consulta RAG
+            self.metrics_manager.log_rag_query(
+                query=query,
+                processing_time=processing_time,
+                num_sources=len(sources),
+                from_cache=False,
+                language=language
+            )
+            
+            # Registrar métricas de documentos utilizados
+            if filtered_context:
+                doc_scores = [doc.metadata.get('reranking_score', 0) for doc in filtered_context if hasattr(doc, 'metadata')]
+                self.metrics_manager.log_retrieval(
+                    query=query,
+                    num_docs=len(filtered_context),
+                    duration=processing_time,
+                    sources=[doc.metadata.get('source', 'unknown') for doc in filtered_context if hasattr(doc, 'metadata')],
+                    language=language
+                )
+                
+                # Si hay puntuaciones de reranking, registrarlas
+                if any(doc_scores):
+                    self.metrics_manager.metrics['document_scores'].extend(doc_scores)
+            
             # Almacenar en caché
             self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
             
@@ -1228,8 +1307,29 @@ class RAGService:
             error_msg = f"I'm sorry, I encountered an error while processing your request: {e}"
             logger.error(error_msg)
             
-            # Registrar el error en las métricas
-            self.metrics_manager.metrics['errors']['rag_processing'] += 1
+            # Registrar el error con detalles
+            self.metrics_manager.log_error(
+                error_type="rag_processing",
+                details=str(e),
+                component="rag_service"
+            )
+            
+            # Registrar métricas de la consulta fallida
+            self.metrics_manager.log_rag_query(
+                query=query,
+                processing_time=error_time,
+                num_sources=0,
+                from_cache=False,
+                language=language
+            )
+            
+            # Registrar métricas de la operación
+            self.metrics_manager.log_operation(
+                operation_type="rag_query", 
+                duration=error_time, 
+                success=False,
+                details={"error": str(e)}
+            )
             
             return {
                 'response': f"I'm sorry, I encountered an error while processing your request. Please try again.",
@@ -1310,17 +1410,63 @@ class RAGService:
         Returns:
             List of reranked documents
         """
+        start_time = time.time()
+        original_count = len(retrieved_docs)
+        
         try:
             # Return original docs if no reranking model specified
             if not model or not settings.RERANKING_TYPE == "cohere":
+                self.metrics_manager.log_operation(
+                    operation_type="reranking_skipped",
+                    duration=0,
+                    success=True,
+                    details={"reason": "no_model_specified"}
+                )
                 return retrieved_docs
 
             # Use Azure Cohere endpoint for reranking
-            return await self._rerank_with_azure_cohere(query, retrieved_docs, model)
-
+            reranked_docs = await self._rerank_with_azure_cohere(query, retrieved_docs, model)
+            
+            # Registrar métricas de reranking
+            duration = time.time() - start_time
+            filtered_count = len(reranked_docs)
+            
+            # Extraer puntuaciones si existen
+            scores = []
+            for doc in reranked_docs:
+                if hasattr(doc, 'metadata') and doc.metadata and 'reranking_score' in doc.metadata:
+                    scores.append(doc.metadata['reranking_score'])
+            
+            # Registrar la operación de reranking
+            self.metrics_manager.log_reranking(
+                model=model,
+                original_count=original_count,
+                filtered_count=filtered_count,
+                duration=duration,
+                scores=scores
+            )
+            
+            return reranked_docs
         
         except Exception as e:
+            duration = time.time() - start_time
             logger.error(f"Error during reranking: {e}")
+            
+            # Registrar el error en las métricas
+            self.metrics_manager.log_error(
+                error_type="reranking_error",
+                details=str(e),
+                component="rerank_docs"
+            )
+            
+            # Registrar la operación fallida
+            self.metrics_manager.log_operation(
+                operation_type="reranking",
+                duration=duration,
+                success=False,
+                details={"error": str(e), "model": model}
+            )
+            
             return retrieved_docs
             
     async def _rerank_with_azure_cohere(
@@ -1419,10 +1565,42 @@ class RAGService:
             logger.debug(f"Azure Cohere reranking took {processing_time:.2f} seconds. "
                        f"Reranked {len(documents)} documents, kept {len(reranked_documents)} above threshold.")
             
+            # Registrar llamada a API
+            self.metrics_manager.log_api_call(
+                api_type="azure_cohere",
+                success=True,
+                duration=processing_time,
+                rate_limited=False
+            )
+            
+            # Registrar puntuaciones si hay resultados
+            if results_json and 'results' in results_json:
+                scores = [r.get('relevance_score', 0) for r in results_json['results']]
+                for score in scores:
+                    # Registrar puntuación mediante la función de prometheus
+                    from app.core.metrics import record_reranking_score
+                    record_reranking_score(model, score)
+            
             return reranked_documents
             
         except Exception as e:
             logger.error(f"Exception during Azure Cohere reranking: {str(e)}")
+            
+            # Registrar error en API
+            self.metrics_manager.log_api_call(
+                api_type="azure_cohere",
+                success=False,
+                duration=time.time() - start_time,
+                rate_limited="rate limit" in str(e).lower()
+            )
+            
+            # Registrar el error
+            self.metrics_manager.log_error(
+                error_type="azure_cohere_reranking",
+                details=str(e),
+                component="rerank_with_azure_cohere"
+            )
+            
             return retrieved_docs
 
 
