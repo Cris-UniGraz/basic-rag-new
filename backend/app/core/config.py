@@ -22,9 +22,10 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_EMBEDDINGS_DEPLOYMENT_ID: str
     AZURE_OPENAI_LLM_MODEL: str
     AZURE_OPENAI_EMBEDDING_MODEL: str
-
-    # Cohere API
-    COHERE_API_KEY: str
+    
+    # Azure Cohere API
+    AZURE_COHERE_ENDPOINT: str
+    AZURE_COHERE_API_KEY: str
 
     # Embedding Models Configuration
     EMBEDDING_MODEL_NAME: str

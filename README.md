@@ -61,8 +61,9 @@ AZURE_OPENAI_API_VERSION=2024-08-01-preview
 AZURE_OPENAI_API_LLM_DEPLOYMENT_ID=gpt-4
 AZURE_OPENAI_API_EMBEDDINGS_DEPLOYMENT_ID=text-embedding-3-large
 
-# Cohere API
-COHERE_API_KEY=your_cohere_api_key
+# Azure Cohere API
+AZURE_COHERE_ENDPOINT=your_azure_cohere_endpoint
+AZURE_COHERE_API_KEY=your_azure_cohere_api_key
 
 # Vector Store Management
 DONT_KEEP_COLLECTIONS=false  # Set to true if you want to recreate collections each time

@@ -1217,7 +1217,7 @@ class RAGService:
         model: str
     ) -> List[Document]:
         """
-        Rerank documents using Cohere.
+        Rerank documents using Cohere through Azure endpoint.
         
         Args:
             query: Query string
@@ -1231,48 +1231,115 @@ class RAGService:
             # Return original docs if no reranking model specified
             if not model or not settings.RERANKING_TYPE == "cohere":
                 return retrieved_docs
+
+            # Use Azure Cohere endpoint for reranking
+            return await self._rerank_with_azure_cohere(query, retrieved_docs, model)
+
+        
+        except Exception as e:
+            logger.error(f"Error during reranking: {e}")
+            return retrieved_docs
             
-            # Initialize Cohere client
-            co = cohere.Client(settings.COHERE_API_KEY)
+    async def _rerank_with_azure_cohere(
+        self,
+        query: str,
+        retrieved_docs: List[Document],
+        model: str
+    ) -> List[Document]:
+        """
+        Rerank documents using Cohere through Azure endpoint.
+        
+        Args:
+            query: Query string
+            retrieved_docs: Documents to rerank
+            model: Reranking model name
             
-            # Extract document text
-            documents = [doc.page_content for doc in retrieved_docs]
+        Returns:
+            List of reranked documents
+        """
+        import requests
+        
+        start_time = time.time()
+        documents = [doc.page_content for doc in retrieved_docs]
+        azure_cohere_endpoint = os.getenv("AZURE_COHERE_ENDPOINT")
+        azure_cohere_api_key = os.getenv("AZURE_COHERE_API_KEY")
+        
+        if not documents:
+            logger.warning("No documents to rerank")
+            return retrieved_docs
+        
+        # Ensure endpoint doesn't end with a trailing slash
+        azure_cohere_endpoint = azure_cohere_endpoint.rstrip('/')
+        
+        # Prepare request headers
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": azure_cohere_api_key,
+            "X-Client-Name": "RAG-Application"
+        }
+        
+        # Prepare request payload
+        payload = {
+            "model": model,
+            "query": query,
+            "documents": documents,
+            "top_n": len(documents)  # Return all documents reranked
+        }
+        
+        # Get current event loop
+        loop = asyncio.get_event_loop()
+        
+        # Make the request in a non-blocking way
+        try:
+            endpoint_url = f"{azure_cohere_endpoint}/v2/rerank"
+            logger.debug(f"Making reranking request to Azure Cohere endpoint")
             
-            # Run reranking in a thread
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None, 
-                lambda: co.rerank(
-                    query=query, 
-                    documents=documents, 
-                    model=model, 
-                    return_documents=True
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    endpoint_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30
                 )
             )
             
-            # Create reranked documents
+            if response.status_code != 200:
+                logger.error(f"Error in Azure Cohere reranking: {response.status_code} - {response.text}")
+                return retrieved_docs
+                
+            results_json = response.json()
+            
+            # Process results
             reranked_documents = []
-            for r in results.results:
+            
+            for result in results_json.get("results", []):
+                idx = result.get("index")
+                score = result.get("relevance_score")
+                
                 # Filter low-scoring documents
-                if r.relevance_score < settings.MIN_RERANKING_SCORE:
+                if score < settings.MIN_RERANKING_SCORE:
                     continue
-                    
-                # Create document with original metadata and reranking score
-                reranked_documents.append(
-                    Document(
-                        page_content=r.document.text, 
+                
+                # Ensure the index is valid
+                if 0 <= idx < len(retrieved_docs):
+                    doc = Document(
+                        page_content=retrieved_docs[idx].page_content,
                         metadata={
-                            **retrieved_docs[r.index].metadata, 
-                            "reranking_score": r.relevance_score
+                            **retrieved_docs[idx].metadata,
+                            "reranking_score": score
                         }
                     )
-                )
+                    reranked_documents.append(doc)
             
-            logger.debug(f"Reranked {len(documents)} documents, kept {len(reranked_documents)} with scores above threshold")
+            processing_time = time.time() - start_time
+            logger.debug(f"Azure Cohere reranking took {processing_time:.2f} seconds. "
+                       f"Reranked {len(documents)} documents, kept {len(reranked_documents)} above threshold.")
+            
             return reranked_documents
             
         except Exception as e:
-            logger.error(f"Error during reranking: {e}")
+            logger.error(f"Exception during Azure Cohere reranking: {str(e)}")
             return retrieved_docs
 
 
