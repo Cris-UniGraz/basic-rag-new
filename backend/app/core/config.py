@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     CACHE_TTL: int = Field(default=3600)  # 1 hour in seconds
     ENABLE_CACHE: bool = Field(default=True)
     REDIS_URL: str = Field(default="redis://redis:6379/0")
+    
+    # Advanced Cache Settings
+    ADVANCED_CACHE_ENABLED: bool = Field(default=True)
+    ADVANCED_CACHE_MAX_SIZE: int = Field(default=1000)  # Máximo número de entradas en caché
+    ADVANCED_CACHE_TTL_HOURS: int = Field(default=24)  # Tiempo de vida en horas
+    ADVANCED_CACHE_SIMILARITY_THRESHOLD: float = Field(default=0.85)  # Umbral para considerar consultas similares
 
     # System Parameters
     USER_AGENT: str = Field(default="rag_assistant")

@@ -23,6 +23,8 @@ from app.core.embedding_manager import embedding_manager
 from app.core.coroutine_manager import coroutine_manager
 from app.core.metrics import measure_time, EMBEDDING_RETRIEVAL_DURATION
 from app.core.cache import cache_result
+from app.core.query_optimizer import QueryOptimizer
+from app.core.metrics_manager import MetricsManager
 from app.utils.loaders import load_documents
 from app.utils.glossary import find_glossary_terms, find_glossary_terms_with_explanation
 from app.utils.output_parsers import LineListOutputParser
@@ -54,6 +56,8 @@ class RAGService:
         self.llm_provider = llm_provider
         self._retrievers = {}
         self._initialized = False
+        self.query_optimizer = QueryOptimizer()
+        self.metrics_manager = MetricsManager()
     
     async def initialize(self) -> None:
         """Initialize the service components."""
@@ -922,7 +926,7 @@ class RAGService:
 
         return translated_query
     
-    @cache_result(prefix="rag_results", ttl=3600)
+    # Reemplazar la caché nativa con optimizador de consultas
     async def process_queries_and_combine_results(
         self,
         query: str,
@@ -952,6 +956,40 @@ class RAGService:
         try:
             start_time = time.time()
             sources_for_cache = []
+            
+            # Verificar caché primero usando el query optimizer
+            cached_result = self.query_optimizer.get_llm_response(query, language)
+            if cached_result:
+                logger.info(f"Cache hit for query: '{query}'")
+                self.metrics_manager.metrics['cache_hits'] += 1
+                return {
+                    'response': cached_result['response'],
+                    'sources': cached_result['sources'],
+                    'from_cache': True,
+                    'processing_time': 0.0
+                }
+            
+            # Si no está en caché, continuar con el procesamiento normal
+            embedding_model = (
+                embedding_manager.german_model if language == "german" 
+                else embedding_manager.english_model
+            )
+            
+            # Optimizar la consulta y almacenar su embedding
+            optimized_query = await self.query_optimizer.optimize_query(
+                query,
+                language,
+                embedding_model
+            )
+            
+            # Si el optimizador encuentra una respuesta en caché
+            if optimized_query['source'] == 'cache':
+                return {
+                    'response': optimized_query['result']['response'],
+                    'sources': optimized_query['result'].get('sources', []),
+                    'from_cache': True,
+                    'processing_time': 0.0
+                }
 
             # Generate all query variations in one LLM call (original, translated, step-back in both languages)
             logger.info(f"Generating query variations for: '{query}'")
@@ -1137,6 +1175,9 @@ class RAGService:
             
             processing_time = time.time() - start_time
             
+            # Almacenar en caché
+            self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
+            
             return {
                 'response': response,
                 'sources': sources,
@@ -1148,11 +1189,18 @@ class RAGService:
             
         except Exception as e:
             logger.error(f"Error processing queries: {e}")
+            error_time = time.time() - start_time
+            error_msg = f"I'm sorry, I encountered an error while processing your request: {e}"
+            logger.error(error_msg)
+            
+            # Registrar el error en las métricas
+            self.metrics_manager.metrics['errors']['rag_processing'] += 1
+            
             return {
                 'response': f"I'm sorry, I encountered an error while processing your request. Please try again.",
                 'sources': [],
                 'from_cache': False,
-                'processing_time': time.time() - start_time
+                'processing_time': error_time
             }
         finally:
             await coroutine_manager.cleanup()
