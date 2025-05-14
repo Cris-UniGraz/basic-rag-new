@@ -230,29 +230,61 @@ class RAGService:
             # Create BM25 retriever for keyword search
             bm25_retriever = self.get_bm25_retriever(collection_name, top_k)
 
-            # Setup retrievers and weights
+            # Setup retrievers with config-based weights
             retrievers = [base_retriever, parent_retriever, multi_query_retriever]
-            weights = [0.15, 0.15, 0.4]
+            weights = [
+                settings.RETRIEVER_WEIGHTS_BASE,
+                settings.RETRIEVER_WEIGHTS_PARENT,
+                settings.RETRIEVER_WEIGHTS_MULTI_QUERY
+            ]
+            
+            # Normalizar pesos iniciales para que sumen 1.0
+            total_weight = sum(weights)
+            weights = [w/total_weight for w in weights]
+            
+            logger.info(f"Initial retriever weights: {[round(w, 3) for w in weights]}")
 
             # Add HyDE retriever if available
             if hyde_retriever:
                 retrievers.append(hyde_retriever)
-                weights.append(0.15)
+                # Recalcular pesos con HyDE
+                total_weight_with_hyde = total_weight + settings.RETRIEVER_WEIGHTS_HYDE
+                weights = [
+                    settings.RETRIEVER_WEIGHTS_BASE / total_weight_with_hyde,
+                    settings.RETRIEVER_WEIGHTS_PARENT / total_weight_with_hyde,
+                    settings.RETRIEVER_WEIGHTS_MULTI_QUERY / total_weight_with_hyde,
+                    settings.RETRIEVER_WEIGHTS_HYDE / total_weight_with_hyde
+                ]
                 logger.info(f"Added HyDE retriever to ensemble for {collection_name}")
+                logger.info(f"Updated weights with HyDE: {[round(w, 3) for w in weights]}")
             else:
-                # Redistribute weights if HyDE is not available
-                weights = [0.2, 0.2, 0.45]
                 logger.warning(f"HyDE retriever not available for {collection_name}")
 
             # Add BM25 retriever if available
             if bm25_retriever:
                 retrievers.append(bm25_retriever)
-                # Adjust weights based on which retrievers are available
+                # Recalcular pesos con o sin HyDE
                 if hyde_retriever:
-                    weights.append(0.15)  # Final weights: 0.15, 0.15, 0.4, 0.15, 0.15
+                    # Con HyDE y BM25
+                    total_weight_all = total_weight_with_hyde + settings.RETRIEVER_WEIGHTS_BM25
+                    weights = [
+                        settings.RETRIEVER_WEIGHTS_BASE / total_weight_all,
+                        settings.RETRIEVER_WEIGHTS_PARENT / total_weight_all,
+                        settings.RETRIEVER_WEIGHTS_MULTI_QUERY / total_weight_all,
+                        settings.RETRIEVER_WEIGHTS_HYDE / total_weight_all,
+                        settings.RETRIEVER_WEIGHTS_BM25 / total_weight_all
+                    ]
                 else:
-                    weights.append(0.15)  # Final weights: 0.2, 0.2, 0.45, 0.15
+                    # Sin HyDE pero con BM25
+                    total_weight_with_bm25 = total_weight + settings.RETRIEVER_WEIGHTS_BM25
+                    weights = [
+                        settings.RETRIEVER_WEIGHTS_BASE / total_weight_with_bm25,
+                        settings.RETRIEVER_WEIGHTS_PARENT / total_weight_with_bm25,
+                        settings.RETRIEVER_WEIGHTS_MULTI_QUERY / total_weight_with_bm25,
+                        settings.RETRIEVER_WEIGHTS_BM25 / total_weight_with_bm25
+                    ]
                 logger.info(f"Added BM25 retriever to ensemble for {collection_name}")
+                logger.info(f"Final weights: {[round(w, 3) for w in weights]}")
             else:
                 logger.warning(f"BM25 retriever not available for {collection_name}")
 
@@ -266,10 +298,11 @@ class RAGService:
                 }
             )
             
-            # Registrar métricas sobre retrievers utilizados
+            # Registrar métricas sobre retrievers utilizados y sus pesos
             retriever_info = {
                 "num_retrievers": len(retrievers),
                 "types": [r.__class__.__name__ for r in retrievers],
+                "weights": [round(w, 3) for w in weights],
                 "collection": collection_name
             }
             self.metrics_manager.log_operation(

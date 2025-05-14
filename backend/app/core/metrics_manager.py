@@ -102,7 +102,11 @@ class MetricsManager:
             # Métricas de usuarios
             'user_sessions': defaultdict(int),  # Sesiones por usuario
             'user_queries': defaultdict(int),   # Consultas por usuario
-            'session_durations': []     # Duración de sesiones
+            'session_durations': [],     # Duración de sesiones
+            
+            # Métricas de efectividad de retrievers
+            'retriever_effectiveness': {},  # Efectividad por tipo de retriever
+            'weighted_contributions': []   # Contribución ponderada de cada retriever
         }
         
         # Inicializar valores adicionales
@@ -549,6 +553,32 @@ class MetricsManager:
         cache_hit_rate = self.metrics['cache_hits'] / (self.metrics['cache_hits'] + self.metrics['cache_misses']) if (self.metrics['cache_hits'] + self.metrics['cache_misses']) > 0 else 0
         semantic_hits_pct = self.metrics['semantic_cache_hits'] / self.metrics['cache_hits'] if self.metrics['cache_hits'] > 0 else 0
         
+        # Procesar estadísticas de efectividad de retrievers
+        retriever_effectiveness = {}
+        if self.metrics['retriever_effectiveness']:
+            for retriever_type, metrics_list in self.metrics['retriever_effectiveness'].items():
+                if metrics_list:
+                    avg_effectiveness = np.mean([m['effectiveness'] for m in metrics_list])
+                    retriever_effectiveness[retriever_type] = {
+                        'avg_effectiveness': float(avg_effectiveness),
+                        'count': len(metrics_list),
+                        'weight': metrics_list[0]['weight'] if metrics_list else 0  # Tomar el primer peso como referencia
+                    }
+        
+        # Procesar contribuciones ponderadas
+        weighted_contributions = {}
+        if self.metrics['weighted_contributions']:
+            for contribution in self.metrics['weighted_contributions']:
+                retriever = contribution.get('retriever')
+                value = contribution.get('contribution', 0)
+                if retriever not in weighted_contributions:
+                    weighted_contributions[retriever] = []
+                weighted_contributions[retriever].append(value)
+            
+            # Calcular promedio
+            for retriever, values in weighted_contributions.items():
+                weighted_contributions[retriever] = float(np.mean(values))
+        
         # Construir el resumen
         return {
             'uptime_seconds': total_time,
@@ -594,6 +624,10 @@ class MetricsManager:
             'query_languages': dict(self.metrics['query_languages']),
             'document_sources': dict(self.metrics['document_sources']),
             'average_documents_per_query': np.mean(self.metrics['document_counts']) if self.metrics['document_counts'] else 0,
+            
+            # Estadísticas de efectividad de retrievers
+            'retriever_effectiveness': retriever_effectiveness,
+            'weighted_contributions': weighted_contributions
         }
     
     def get_detailed_statistics(self) -> Dict[str, Any]:
@@ -645,6 +679,45 @@ class MetricsManager:
                     **get_percentiles(times)
                 }
         
+        # Estadísticas para retriever effectiveness
+        retriever_effectiveness_stats = {}
+        for retriever_type, metrics_list in self.metrics['retriever_effectiveness'].items():
+            if metrics_list:
+                effectiveness_values = [m['effectiveness'] for m in metrics_list]
+                retriever_effectiveness_stats[retriever_type] = {
+                    'count': len(metrics_list),
+                    'mean': float(np.mean(effectiveness_values)),
+                    'median': float(np.median(effectiveness_values)),
+                    'min': float(np.min(effectiveness_values)),
+                    'max': float(np.max(effectiveness_values)),
+                    'std': float(np.std(effectiveness_values)),
+                    'weight': metrics_list[0]['weight'] if metrics_list else 0,
+                    **get_percentiles(effectiveness_values)
+                }
+        
+        # Estadísticas para contribuciones ponderadas
+        weighted_contributions_stats = {}
+        weighted_values_by_retriever = {}
+        
+        for contribution in self.metrics['weighted_contributions']:
+            retriever = contribution.get('retriever')
+            value = contribution.get('contribution', 0)
+            if retriever not in weighted_values_by_retriever:
+                weighted_values_by_retriever[retriever] = []
+            weighted_values_by_retriever[retriever].append(value)
+        
+        for retriever, values in weighted_values_by_retriever.items():
+            if values:
+                weighted_contributions_stats[retriever] = {
+                    'count': len(values),
+                    'mean': float(np.mean(values)),
+                    'median': float(np.median(values)),
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values)),
+                    'std': float(np.std(values)),
+                    **get_percentiles(values)
+                }
+        
         # Combinar todo en un único diccionario de estadísticas
         return {
             'response_times': response_times_stats,
@@ -689,7 +762,9 @@ class MetricsManager:
                     'max': float(np.max(self.metrics['llm_tokens_output'])) if self.metrics['llm_tokens_output'] else 0,
                     'total': sum(self.metrics['llm_tokens_output']) if self.metrics['llm_tokens_output'] else 0
                 }
-            }
+            },
+            'retriever_effectiveness': retriever_effectiveness_stats,
+            'weighted_contributions': weighted_contributions_stats
         }
     
     def save_metrics(self, filename: str = None) -> str:
@@ -733,6 +808,88 @@ class MetricsManager:
         self.logger.info(f"Métricas guardadas en {filepath}")
         return filepath
     
+    def log_retriever_effectiveness(self, retriever_type: str, documents_found: int, documents_used: int):
+        """
+        Registra la efectividad de un retriever específico.
+        
+        Args:
+            retriever_type: Tipo de retriever (base, parent, multi_query, hyde, bm25)
+            documents_found: Número de documentos recuperados por este retriever
+            documents_used: Número de documentos utilizados en la respuesta final
+        """
+        # Calcular efectividad (porcentaje de documentos utilizados)
+        effectiveness = documents_used / documents_found if documents_found > 0 else 0
+        
+        # Inicializar el registro para este tipo de retriever si no existe
+        if 'retriever_effectiveness' not in self.metrics:
+            self.metrics['retriever_effectiveness'] = {}
+            
+        if retriever_type not in self.metrics['retriever_effectiveness']:
+            self.metrics['retriever_effectiveness'][retriever_type] = []
+        
+        # Obtener el peso configurado para este tipo de retriever
+        weight = self._get_retriever_weight(retriever_type)
+        
+        # Registrar la efectividad
+        self.metrics['retriever_effectiveness'][retriever_type].append({
+            'effectiveness': effectiveness,
+            'documents_found': documents_found,
+            'documents_used': documents_used,
+            'weight': weight,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Registrar también la contribución ponderada
+        weighted_contribution = effectiveness * weight
+        self.metrics['weighted_contributions'].append({
+            'retriever': retriever_type,
+            'contribution': weighted_contribution,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Registrar como operación
+        self.log_operation(
+            operation_type=f"retriever_{retriever_type}",
+            duration=0,
+            success=True,
+            details={
+                'documents_found': documents_found,
+                'documents_used': documents_used,
+                'effectiveness': effectiveness,
+                'weight': weight
+            }
+        )
+    
+    def _get_retriever_weight(self, retriever_type: str) -> float:
+        """
+        Obtiene el peso configurado para un tipo de retriever.
+        
+        Args:
+            retriever_type: Tipo de retriever (base, parent, multi_query, hyde, bm25)
+            
+        Returns:
+            Peso configurado o 0.0 si no se encuentra
+        """
+        try:
+            # Importar settings aquí para evitar dependencia circular
+            from app.core.config import settings
+            
+            if retriever_type == 'base':
+                return settings.RETRIEVER_WEIGHTS_BASE
+            elif retriever_type == 'parent':
+                return settings.RETRIEVER_WEIGHTS_PARENT
+            elif retriever_type == 'multi_query':
+                return settings.RETRIEVER_WEIGHTS_MULTI_QUERY
+            elif retriever_type == 'hyde':
+                return settings.RETRIEVER_WEIGHTS_HYDE
+            elif retriever_type == 'bm25':
+                return settings.RETRIEVER_WEIGHTS_BM25
+            else:
+                return 0.0
+        except Exception as e:
+            self.logger.error(f"Error obteniendo peso para retriever {retriever_type}: {e}")
+            return 0.0
+            
     def export_to_csv(self, directory: str = None) -> Dict[str, str]:
         """
         Exporta métricas seleccionadas a archivos CSV para análisis.

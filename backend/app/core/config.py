@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     GERMAN_COHERE_RERANKING_MODEL: str
     ENGLISH_COHERE_RERANKING_MODEL: str
     MIN_RERANKING_SCORE: float = Field(default=0.2)
+    
+    # Retriever Weights Configuration
+    # Pesos para los diferentes retrievers en el ensemble
+    RETRIEVER_WEIGHTS_BASE: float = Field(default=0.1)  # Base vectorial retriever
+    RETRIEVER_WEIGHTS_PARENT: float = Field(default=0.3)  # Parent document retriever  
+    RETRIEVER_WEIGHTS_MULTI_QUERY: float = Field(default=0.4)  # Multi-query retriever
+    RETRIEVER_WEIGHTS_HYDE: float = Field(default=0.1)  # HyDE retriever
+    RETRIEVER_WEIGHTS_BM25: float = Field(default=0.1)  # BM25 retriever
 
     # Collection and Document Paths
     COLLECTION_NAME: str
