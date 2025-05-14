@@ -972,6 +972,60 @@ class RAGService:
 
         return translated_query
     
+    @coroutine_manager.coroutine_handler(task_type="retrieval")
+    async def retrieve_context_without_reranking(
+        self,
+        query: str,
+        retriever: Any,
+        chat_history: List[Tuple[str, str]] = [],
+        language: str = "german"
+    ) -> List[Document]:
+        """
+        Retrieve documents for a query without reranking.
+        
+        This function is used to retrieve documents for all queries in parallel,
+        which will later be combined and reranked in a single operation.
+        
+        Args:
+            query: Query string
+            retriever: Document retriever
+            chat_history: Chat history
+            language: Language of the query
+            
+        Returns:
+            List of retrieved documents
+        """
+        try:
+            # Format chat history
+            formatted_history = []
+            for human_msg, ai_msg in chat_history:
+                formatted_history.extend([
+                    HumanMessage(content=human_msg),
+                    AIMessage(content=ai_msg)
+                ])
+            
+            # Retrieve documents 
+            retrieved_docs = await retriever.ainvoke({
+                "input": query,
+                "chat_history": formatted_history,
+                "language": language
+            })
+            
+            # Log retrieval metrics
+            self.metrics_manager.log_retrieval(
+                query=query,
+                num_docs=len(retrieved_docs),
+                duration=0.0,  # Duration is measured by coroutine_handler decorator
+                sources=[doc.metadata.get('source', 'unknown') for doc in retrieved_docs if hasattr(doc, 'metadata')],
+                language=language
+            )
+            
+            return retrieved_docs
+            
+        except Exception as e:
+            logger.error(f"Error in retrieve_context_without_reranking: {e}")
+            return []
+    
     async def process_queries_and_combine_results(
         self,
         query: str,
@@ -1127,29 +1181,27 @@ class RAGService:
             logger.debug(f"Generated queries: Original DE: '{query_de}', Original EN: '{query_en}', "
                        f"Step-back DE: '{step_back_query_de}', Step-back EN: '{step_back_query_en}'")
 
-            # Retrieve and rerank in parallel, but only for retrievers that exist
+            # MODIFICADO: Recuperar documentos para todas las consultas sin reranking
             retrieval_tasks = []
 
-            # Add German retriever tasks if it exists
+            # Agregar tareas para el retriever alemán si existe
             if retriever_de is not None:
                 logger.info("Adding German retriever tasks (original + step-back)")
-                # Original German query
+                # Consulta original en alemán
                 retrieval_tasks.append(
-                    self.retrieve_context_reranked(
+                    self.retrieve_context_without_reranking(
                         query_de,
                         retriever_de,
-                        settings.GERMAN_COHERE_RERANKING_MODEL,
                         chat_history,
                         "german"
                     )
                 )
-                # Step-back German query
+                # Consulta step-back en alemán
                 if step_back_query_de:
                     retrieval_tasks.append(
-                        self.retrieve_context_reranked(
+                        self.retrieve_context_without_reranking(
                             step_back_query_de,
                             retriever_de,
-                            settings.GERMAN_COHERE_RERANKING_MODEL,
                             chat_history,
                             "german"
                         )
@@ -1157,26 +1209,24 @@ class RAGService:
             else:
                 logger.warning("German retriever is None, skipping German retrieval")
 
-            # Add English retriever tasks if it exists
+            # Agregar tareas para el retriever inglés si existe
             if retriever_en is not None:
                 logger.info("Adding English retriever tasks (original + step-back)")
-                # Original English query
+                # Consulta original en inglés
                 retrieval_tasks.append(
-                    self.retrieve_context_reranked(
+                    self.retrieve_context_without_reranking(
                         query_en,
                         retriever_en,
-                        settings.ENGLISH_COHERE_RERANKING_MODEL,
                         chat_history,
                         "english"
                     )
                 )
-                # Step-back English query
+                # Consulta step-back en inglés
                 if step_back_query_en:
                     retrieval_tasks.append(
-                        self.retrieve_context_reranked(
+                        self.retrieve_context_without_reranking(
                             step_back_query_en,
                             retriever_en,
-                            settings.ENGLISH_COHERE_RERANKING_MODEL,
                             chat_history,
                             "english"
                         )
@@ -1184,10 +1234,13 @@ class RAGService:
             else:
                 logger.warning("English retriever is None, skipping English retrieval")
             
+            # Ejecutar todas las tareas de recuperación en paralelo
             results = await coroutine_manager.gather_coroutines(*retrieval_tasks)
             
-            # Process results
-            all_reranked_docs = []
+            # Procesar los resultados y eliminar duplicados
+            all_retrieved_docs = []
+            seen_contents = set()
+            
             for result in results:
                 if result:
                     for document in result:
@@ -1195,10 +1248,15 @@ class RAGService:
                             continue
                         if not hasattr(document, 'metadata') or document.metadata is None:
                             document.metadata = {}
-                        all_reranked_docs.append(document)
+                        
+                        # Verificar si el contenido ya está en nuestro conjunto para evitar duplicados
+                        content_hash = hash(document.page_content)
+                        if content_hash not in seen_contents:
+                            seen_contents.add(content_hash)
+                            all_retrieved_docs.append(document)
             
-            # Handle case where no relevant documents were found
-            if not all_reranked_docs:
+            # Manejar el caso donde no se encontraron documentos relevantes
+            if not all_retrieved_docs:
                 logger.warning("No relevant documents found for the query")
                 no_docs_response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden."
                 if language.lower() == "english":
@@ -1211,17 +1269,27 @@ class RAGService:
                     'processing_time': time.time() - start_time
                 }
             
-            # Prepare context for LLM
+            # MODIFICADO: Realizar una única llamada al reranking con todos los documentos recuperados
+            # Seleccionar el modelo de reranking apropiado según el idioma de la consulta
+            reranker_model = (
+                settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
+                else settings.ENGLISH_COHERE_RERANKING_MODEL
+            )
+            
+            # Realizar el reranking de todos los documentos recuperados en una sola operación
+            all_reranked_docs = await self.rerank_docs(query, all_retrieved_docs, reranker_model)
+            
+            # Preparar contexto para el LLM
             filtered_context = []
             sources = []
             
-            # Sort documents by reranking score
+            # Ordenar documentos por puntuación de reranking
             all_reranked_docs.sort(
                 key=lambda x: x.metadata.get('reranking_score', 0), 
                 reverse=True
             )
             
-            # Take top documents up to limit
+            # Tomar los documentos principales hasta el límite
             for document in all_reranked_docs[:settings.MAX_CHUNKS_LLM]:
                 source = {
                     'source': document.metadata.get('source', 'Unknown'),
