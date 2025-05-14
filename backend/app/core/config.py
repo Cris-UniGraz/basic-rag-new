@@ -82,10 +82,16 @@ class Settings(BaseSettings):
     DEFAULT_LANGUAGE: str = Field(default="german")
 
     # Resource Management
-    MAX_CONCURRENT_TASKS: int = Field(default=3)
+    MAX_CONCURRENT_TASKS: int = Field(default=5)  # Increased from 3 to 5
     TASK_TIMEOUT: int = Field(default=60)  # Seconds
     MAX_RETRIES: int = Field(default=3)
     RETRY_BACKOFF: float = Field(default=1.5)  # Exponential backoff factor
+    
+    # Enhanced Coroutine Management
+    STORE_TASK_HISTORY: bool = Field(default=True)  # Keep history of completed tasks
+    TASK_HISTORY_SIZE: int = Field(default=1000)  # Maximum number of historical tasks to store
+    DEFAULT_SUPPRESS_ERRORS: bool = Field(default=False)  # Default behavior for error handling
+    PARALLEL_EXECUTION_CHUNK_SIZE: int = Field(default=10)  # Chunk size for parallel processing
     
     # Vector Store Management
     DONT_KEEP_COLLECTIONS: bool = Field(default=False)
