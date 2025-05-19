@@ -66,7 +66,7 @@ def get_api_url(endpoint: str) -> str:
 
 # Page configuration
 st.set_page_config(
-    page_title="RAG Assistant",
+    page_title="Uni AI Chat Bot",
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -462,25 +462,32 @@ def display_chat():
                 </div>
             </div>
             """, unsafe_allow_html=True)
-    
-    # Display sources from last assistant message
-    if st.session_state.sources:
-        with st.expander("Sources", expanded=False):
-            for source in st.session_state.sources:
-                st.markdown("---")
-                st.write(f"**Source:** {source['source']}")
-                st.write(f"**Page:** {source.get('page_number', 'N/A')}")
-                st.write(f"**Type:** {source.get('file_type', 'Unknown')}")
+            
+            # Mostrar las fuentes después de cada mensaje del asistente
+            if message['role'] == 'assistant' and 'sources' in message and message['sources']:
+                sources = message['sources']
+                with st.expander("Sources", expanded=False):
+                    for source in sources:
+                        st.markdown("---")
+                        st.write(f"**Source:** {source['source']}")
+                        st.write(f"**Page:** {source.get('page_number', 'N/A')}")
+                        st.write(f"**Type:** {source.get('file_type', 'Unknown')}")
+                        
+                        if source.get('sheet_name'):
+                            st.write(f"**Sheet:** {source['sheet_name']}")
+                        
+                        if 'reranking_score' in source:
+                            st.write(f"**Score:** {source.get('reranking_score', 0):.4f}")
                 
-                if source.get('sheet_name'):
-                    st.write(f"**Sheet:** {source['sheet_name']}")
-                
-                if 'reranking_score' in source:
-                    st.write(f"**Score:** {source.get('reranking_score', 0):.4f}")
+                # Mostrar el tiempo de procesamiento si está disponible
+                if 'processing_time' in message:
+                    st.caption(f"Response generated in {message['processing_time']:.2f} seconds")
     
-    # Display processing time
+    # Ya no necesitamos mostrar las fuentes al final, porque ahora se muestran con cada mensaje
+    # Mantenemos el código para mostrar el tiempo de procesamiento de la última respuesta
+    # para compatibilidad con el código existente
     if st.session_state.processing_time:
-        st.caption(f"Response generated in {st.session_state.processing_time:.2f} seconds")
+        pass  # Ya mostramos el tiempo con cada mensaje
 
 
 def handle_user_input():
@@ -522,12 +529,16 @@ def handle_user_input():
         sources = response.get("sources", [])
         processing_time = response.get("processing_time", 0)
         
-        # Update state
+        # Update state - MODIFICADO: incluir sources en el mensaje del asistente
         st.session_state.messages.append({
             "role": "assistant",
             "content": assistant_message,
+            "sources": sources,  # Incluimos las fuentes con cada mensaje
+            "processing_time": processing_time,  # También incluimos el tiempo de procesamiento
             "timestamp": datetime.now().isoformat()
         })
+        
+        # Mantener la última respuesta también en el state (para compatibilidad)
         st.session_state.sources = sources
         st.session_state.processing_time = processing_time
     
@@ -942,7 +953,7 @@ def settings_tab():
 # Main UI
 def main():
     """Main application."""
-    st.title("RAG Assistant")
+    st.title("Uni AI Chat Bot")
     
     # Si SHOW_FULL_FRONTEND es True, mostrar todas las pestañas
     if SHOW_FULL_FRONTEND:

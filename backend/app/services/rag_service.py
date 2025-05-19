@@ -1447,7 +1447,7 @@ class RAGService:
             )
             
             return {
-                'response': f"I'm sorry, I encountered an error while processing your request. Please try again.",
+                'response': f"Es tut mir leid, bei der Bearbeitung Ihrer Anfrage ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.",
                 'sources': [],
                 'from_cache': False,
                 'processing_time': error_time
