@@ -949,10 +949,15 @@ def settings_tab():
                 except Exception as e2:
                     st.warning(f"Failed with {url}: {e2}")
 
+st.markdown("""
+<iframe src="https://static.uni-graz.at/dist/unigraz/images/animatelogo.svg" 
+style="border:none; width:100px; height:85px; margin-bottom:5px;"></iframe>
+""", unsafe_allow_html=True)
 
 # Main UI
 def main():
     """Main application."""
+    st.markdown('<div style="height:5px"></div>', unsafe_allow_html=True)
     st.title("Uni AI Chat Bot")
     
     # Si SHOW_FULL_FRONTEND es True, mostrar todas las pestañas
