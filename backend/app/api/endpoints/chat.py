@@ -270,7 +270,7 @@ async def chat(
         
         if not response:
             logger.warning("RAG service returned empty response")
-            response = "Lo siento, no pude generar una respuesta. Por favor intenta reformular tu pregunta."
+            response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden."
         
         # Format response
         chat_response = ChatResponse(

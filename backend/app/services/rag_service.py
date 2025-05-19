@@ -1315,8 +1315,8 @@ class RAGService:
                     You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                     Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                    If the CONTEXT does not contain information to answer the QUESTION, try to answer the question with your knowledge, but only if the answer is appropriate.
-                    Give detailed answers in {language}.
+                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                    Give always detailed answers in {language}.
 
                     QUERY: ```{question}```
 
@@ -1333,12 +1333,12 @@ class RAGService:
                     You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                     Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                    If the CONTEXT does not contain information to answer the QUESTION, try to answer the question with your knowledge, but only if the answer is appropriate.
+                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
 
                     The following terms from the query have specific meanings:
                     {glossary}
 
-                    Please consider these specific meanings when responding. Give detailed answers in {language}.
+                    Please consider these specific meanings when responding. Give always detailed answers in {language}.
 
                     QUERY: ```{question}```
 
@@ -1390,9 +1390,23 @@ class RAGService:
                 if any(doc_scores):
                     self.metrics_manager.metrics['document_scores'].extend(doc_scores)
             
-            # Almacenar en caché
-            self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
+            # Almacenar en caché (solo si hay documentos relevantes según MIN_RERANKING_SCORE)
+            # self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
+
+            # Verificar si hay al menos un documento con puntuación superior al umbral mínimo
+            has_relevant_docs = False
+            for doc in filtered_context:
+                if hasattr(doc, 'metadata') and doc.metadata and doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE:
+                    has_relevant_docs = True
+                    break
             
+            # Almacenar en caché solo si hay documentos relevantes
+            if has_relevant_docs:
+                self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
+                logger.info(f"Respuesta almacenada en caché para la consulta: '{query}' (documentos relevantes encontrados)")
+            else:
+                logger.warning(f"No se almacenó la respuesta en caché para la consulta: '{query}' (no hay documentos con puntuación suficiente)")
+                          
             return {
                 'response': response,
                 'sources': sources,

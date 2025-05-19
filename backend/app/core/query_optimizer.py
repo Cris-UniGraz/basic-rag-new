@@ -94,6 +94,9 @@ class QueryOptimizer:
         
         validated_sources = []
         
+        # Verificar si existen documentos relevantes (con puntaje >= MIN_RERANKING_SCORE)
+        has_relevant_docs = False
+        
         if sources and isinstance(sources, list):
             for source in sources:
                 if isinstance(source, dict):
@@ -105,17 +108,25 @@ class QueryOptimizer:
                         'reranking_score': source.get('reranking_score', 0)
                     }
                     validated_sources.append(validated_source)
+                    
+                    # Comprobar si este documento es relevante según su puntaje de reranking
+                    if validated_source['reranking_score'] >= settings.MIN_RERANKING_SCORE:
+                        has_relevant_docs = True
+        
+        # Solo almacenar en caché si hay al menos un documento relevante
+        if has_relevant_docs or not sources:  # También guardar si no hay sources especificadas (caso legacy)
+            self.llm_cache[query_hash] = {
+                'response': response,
+                'timestamp': datetime.now(),
+                'language': language,
+                'sources': validated_sources,
+                'original_query': query
+            }
 
-        self.llm_cache[query_hash] = {
-            'response': response,
-            'timestamp': datetime.now(),
-            'language': language,
-            'sources': validated_sources,
-            'original_query': query
-        }
-
-        # Limpiar caché automáticamente cuando sea necesario
-        self._auto_cleanup_if_needed()
+            # Limpiar caché automáticamente cuando sea necesario
+            self._auto_cleanup_if_needed()
+        else:
+            logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque no contiene documentos relevantes")
 
     def get_llm_response(self, query: str, language: str) -> Optional[Dict]:
         """
