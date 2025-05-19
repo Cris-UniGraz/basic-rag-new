@@ -2,6 +2,7 @@ import os
 # Temporarily comment out torch until we can install it
 # import torch
 from typing import Dict, Optional, Any, List, Union
+import numpy as np
 # from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_core.embeddings import Embeddings
@@ -246,7 +247,7 @@ class EmbeddingManager:
         self, 
         query: str, 
         model_name: Optional[str] = None
-    ) -> List[float]:
+    ) -> np.ndarray:
         """
         Generate embedding for a single query.
         
@@ -255,7 +256,7 @@ class EmbeddingManager:
             model_name: Name of the model to use (defaults to German model)
             
         Returns:
-            Embedding vector
+            Embedding vector as a numpy array
         """
         # Get the specified model or default to German
         if not model_name:
@@ -270,6 +271,10 @@ class EmbeddingManager:
         # Generate and time the embedding
         with measure_time(EMBEDDING_CREATION_DURATION, labels):
             embedding = model.embed_query(query)
+        
+        # Convertir a numpy array si es una lista
+        if isinstance(embedding, list):
+            embedding = np.array(embedding)
         
         return embedding
     

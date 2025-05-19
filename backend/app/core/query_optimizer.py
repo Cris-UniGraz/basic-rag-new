@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, cast
 import hashlib
 import json
 import numpy as np
@@ -233,7 +233,7 @@ class QueryOptimizer:
                 }
         return None
         
-    def _store_embedding(self, text: str, model_name: str, embedding: np.ndarray):
+    def _store_embedding(self, text: str, model_name: str, embedding: Union[np.ndarray, List]):
         """
         Almacena un embedding en el caché.
         
@@ -242,6 +242,10 @@ class QueryOptimizer:
             model_name: Nombre del modelo de embedding
             embedding: Vector de embedding
         """
+        # Convertir a numpy array si es una lista
+        if isinstance(embedding, list):
+            embedding = np.array(embedding)
+            
         key = f"{text}:{model_name}"
         self.embedding_cache[key] = {
             'embedding': embedding,
@@ -277,6 +281,12 @@ class QueryOptimizer:
         Returns:
             Similitud de coseno entre 0 y 1
         """
+        # Convertir a numpy array si son listas
+        if isinstance(vec1, list):
+            vec1 = np.array(vec1)
+        if isinstance(vec2, list):
+            vec2 = np.array(vec2)
+            
         # Asegurar que los vectores sean unidimensionales
         if len(vec1.shape) > 1:
             vec1 = vec1.flatten()
@@ -300,7 +310,7 @@ class QueryOptimizer:
         # Asegurar que el resultado esté en el rango [0, 1]
         return max(0.0, min(float(similarity), 1.0))
         
-    def _compute_similarity(self, query_embedding: np.ndarray, stored_embedding: np.ndarray) -> float:
+    def _compute_similarity(self, query_embedding: Union[np.ndarray, List], stored_embedding: Union[np.ndarray, List]) -> float:
         """
         Calcula la similitud del coseno entre dos embeddings.
         
@@ -311,6 +321,12 @@ class QueryOptimizer:
         Returns:
             Valor de similitud entre 0 y 1
         """
+        # Convertir a numpy array si son listas
+        if isinstance(query_embedding, list):
+            query_embedding = np.array(query_embedding)
+        if isinstance(stored_embedding, list):
+            stored_embedding = np.array(stored_embedding)
+            
         if USE_SKLEARN:
             # Usar sklearn si está disponible
             # Asegurar que los embeddings tengan dimensiones correctas para similitud de coseno
@@ -323,7 +339,7 @@ class QueryOptimizer:
             # Usar implementación nativa como alternativa
             return self._compute_cosine_similarity_native(query_embedding, stored_embedding)
     
-    def _find_similar_query(self, query_embedding: np.ndarray, language: str) -> Optional[Dict]:
+    def _find_similar_query(self, query_embedding: Union[np.ndarray, List], language: str) -> Optional[Dict]:
         """
         Busca una consulta semánticamente similar en el historial.
         
@@ -334,6 +350,9 @@ class QueryOptimizer:
         Returns:
             Consulta similar si existe, None en caso contrario
         """
+        # Convertir a numpy array si es una lista
+        if isinstance(query_embedding, list):
+            query_embedding = np.array(query_embedding)
         if not self.semantic_caching_enabled:
             return None
             
@@ -383,7 +402,7 @@ class QueryOptimizer:
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
     
-    def _store_query_embedding(self, query: str, embedding: np.ndarray, language: str):
+    def _store_query_embedding(self, query: str, embedding: Union[np.ndarray, List], language: str):
         """
         Almacena el embedding de una consulta para comparaciones futuras.
         
@@ -392,6 +411,10 @@ class QueryOptimizer:
             embedding: Vector de embedding
             language: Idioma de la consulta
         """
+        # Convertir a numpy array si es una lista
+        if isinstance(embedding, list):
+            embedding = np.array(embedding)
+            
         query_hash = self._generate_query_hash(query)
         
         self.query_embeddings[query_hash] = {
