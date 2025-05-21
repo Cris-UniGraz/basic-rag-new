@@ -481,7 +481,7 @@ def display_chat():
                 
                 # Mostrar el tiempo de procesamiento si está disponible
                 if 'processing_time' in message:
-                    st.caption(f"Die Antwort wird in {message['processing_time']:.2f} Sekunden generiert.")
+                    st.caption(f"Die Antwort wurde in {message['processing_time']:.2f} Sekunden generiert.")
     
     # Ya no necesitamos mostrar las fuentes al final, porque ahora se muestran con cada mensaje
     # Mantenemos el código para mostrar el tiempo de procesamiento de la última respuesta
@@ -497,15 +497,29 @@ def handle_user_input():
     
     # Reset button in the left column
     with input_cols[0]:
-        if st.button("🗑️", help="Reset conversation history", key="reset_btn_input"):
-            # Clear chat history
+        # Usar componente para ejecutar JavaScript y capturar clics
+        if st.button("🗑️", key="reset_btn"):
             st.session_state.messages = []
             st.session_state.sources = []
             st.session_state.processing_time = None
             if 'waiting_for_response' in st.session_state:
                 st.session_state.waiting_for_response = False
             st.rerun()
-    
+        
+        # Añadir CSS para estilizar el botón
+        st.markdown(
+            """
+            <style>
+            /* Estilo específico para el botón reset */
+            [data-testid="stButton"] button {
+                background-color: #E53935 !important;
+                color: white !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
     # Get user input in the right column
     with input_cols[1]:
         user_input = st.chat_input("Stelle eine Frage...")

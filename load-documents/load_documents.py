@@ -9,6 +9,8 @@ from tqdm import tqdm
 # PARA USAR ESTE SCRIPT:
 # python load_documents.py --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection uni_test_1_1
 # python load_documents.py --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
+# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection uni_test_2_0
+# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
 #
 # DEPENDENCIAS REQUERIDAS:
 # pip install requests tqdm PyMuPDF docx2txt openpyxl
