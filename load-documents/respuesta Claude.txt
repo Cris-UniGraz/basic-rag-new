@@ -1,0 +1,181 @@
+● Basado en el análisis de ambos proyectos, he desarrollado el siguiente script que cumple con todos los
+  requisitos solicitados:
+
+  import os
+  import requests
+  import argparse
+  import time
+  import json
+  from pathlib import Path
+  from tqdm import tqdm
+
+  def get_files_recursively(directory):
+      """Obtiene todos los archivos de un directorio y sus subdirectorios."""
+      files = []
+      for root, _, filenames in os.walk(directory):
+          for filename in filenames:
+              if not filename.startswith('~') and not filename.startswith('.'):
+                  file_path = os.path.join(root, filename)
+                  files.append(file_path)
+      return files
+
+  def upload_documents(base_url, directory_path, collection_name):
+      """Carga documentos al servicio RAG desde subcarpetas por idioma."""
+      # Verificar que el directorio exista
+      if not os.path.exists(directory_path):
+          print(f"Error: El directorio {directory_path} no existe.")
+          return False
+
+      # Verificar las subcarpetas de idioma
+      de_dir = os.path.join(directory_path, "de")
+      en_dir = os.path.join(directory_path, "en")
+
+      if not (os.path.exists(de_dir) or os.path.exists(en_dir)):
+          print(f"Error: No se encontraron las subcarpetas 'de' o 'en' en {directory_path}.")
+          return False
+
+      print(f"\n📄 Utilidad de carga masiva de documentos para RAG")
+      print(f"==================================================")
+      print(f"URL Base: {base_url}")
+      print(f"Directorio: {directory_path}")
+      print(f"Nombre base de colección: {collection_name}")
+
+      # Procesar documentos en alemán
+      if os.path.exists(de_dir):
+          process_language_directory(base_url, de_dir, "german", collection_name)
+
+      # Procesar documentos en inglés
+      if os.path.exists(en_dir):
+          process_language_directory(base_url, en_dir, "english", collection_name)
+
+      print(f"\n✅ Procesamiento de todos los documentos completado con éxito!")
+      return True
+
+  def process_language_directory(base_url, directory, language, collection_name):
+      """Procesa documentos de una carpeta de idioma específica."""
+      # Obtener todos los archivos del directorio y sus subdirectorios
+      files = get_files_recursively(directory)
+
+      if not files:
+          print(f"No se encontraron archivos en {directory}.")
+          return
+
+      lang_name = "alemán" if language == "german" else "inglés"
+      print(f"\nProcesando {len(files)} documentos en {lang_name} desde {directory}...")
+
+      # Procesar archivos en lotes para evitar sobrecargar la API
+      batch_size = 5
+      batches = [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
+
+      batch_progress = tqdm(total=len(batches), desc=f"Progreso general", unit="lote")
+
+      for batch_index, batch in enumerate(batches):
+          # Preparar archivos para subir
+          files_to_upload = []
+          for file_path in batch:
+              file_name = os.path.basename(file_path)
+              files_to_upload.append(
+                  ('files', (file_name, open(file_path, 'rb'), 'application/octet-stream'))
+              )
+
+          # Subir documentos
+          try:
+              response = requests.post(
+                  f"{base_url}/api/documents/upload",
+                  files=files_to_upload,
+                  data={
+                      'language': language,
+                      'collection_name': collection_name
+                  }
+              )
+
+              response.raise_for_status()
+              result = response.json()
+
+              # Monitorear progreso de carga
+              task_id = result.get('task_id')
+              if task_id:
+                  monitor_upload_progress(base_url, task_id)
+
+              # Cerrar handlers de archivos
+              for _, file_obj, _ in files_to_upload:
+                  file_obj[1].close()
+
+          except requests.exceptions.RequestException as e:
+              print(f"Error al subir documentos: {e}")
+              # Cerrar handlers de archivos en caso de error
+              for _, file_obj, _ in files_to_upload:
+                  file_obj[1].close()
+
+          batch_progress.update(1)
+
+      batch_progress.close()
+
+  def monitor_upload_progress(base_url, task_id):
+      """Monitorea el progreso de un proceso de carga de documentos."""
+      progress_bar = tqdm(total=100, desc="Procesando", unit="%")
+      last_percentage = 0
+
+      while True:
+          try:
+              response = requests.get(f"{base_url}/api/documents/progress/{task_id}")
+              response.raise_for_status()
+
+              data = response.json()
+              status = data.get('status')
+              percentage = data.get('percentage', 0)
+
+              # Actualizar barra de progreso
+              progress_diff = percentage - last_percentage
+              if progress_diff > 0:
+                  progress_bar.update(progress_diff)
+                  last_percentage = percentage
+
+              if status == "completed":
+                  progress_bar.update(100 - last_percentage)  # Asegurar que lleguemos al 100%
+                  progress_bar.close()
+                  print(f"✅ Carga completada: {data.get('message', 'Éxito')}")
+                  break
+              elif status == "error":
+                  progress_bar.close()
+                  print(f"❌ Error en la carga: {data.get('message', 'Error desconocido')}")
+                  break
+
+              time.sleep(2)  # Consultar cada 2 segundos
+
+          except requests.exceptions.RequestException as e:
+              progress_bar.close()
+              print(f"Error al monitorear el progreso: {e}")
+              break
+
+  def main():
+      """Función principal."""
+      parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG desde carpetas de
+  idioma.')
+      parser.add_argument('--url', default='http://localhost:8000', help='URL base de la API de RAG')
+      parser.add_argument('--dir', required=True, help='Directorio base que contiene carpetas "de" y "en"')
+      parser.add_argument('--collection', default='documents', help='Nombre base de la colección')
+
+      args = parser.parse_args()
+
+      upload_documents(args.url, args.dir, args.collection)
+
+  if __name__ == "__main__":
+      main()
+
+  Este script:
+
+  1. Busca documentos en las subcarpetas "de" (alemán) y "en" (inglés) del directorio especificado
+  2. Sube los documentos al endpoint /api/documents/upload de la API del proyecto basic-rag-new
+  3. Configura automáticamente el idioma correcto basado en la carpeta de origen
+  4. Procesa los documentos en lotes para evitar sobrecargar la API
+  5. Muestra una barra de progreso global del procesamiento y una barra para cada lote
+  6. Monitorea el progreso de cada carga mediante el endpoint /api/documents/progress/{task_id}
+  7. Muestra un mensaje de éxito cuando se completa el procesamiento de todos los documentos
+
+  Para usar el script, simplemente ejecútalo con el parámetro obligatorio --dir:
+
+  python carga_documentos.py --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection mi_coleccion
+
+  El script usará por defecto http://localhost:8000 como URL base y "documents" como nombre base de
+  colección si no se especifican.

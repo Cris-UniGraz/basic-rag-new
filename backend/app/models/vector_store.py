@@ -56,8 +56,13 @@ class Milvus(BaseMilvus):
             except Exception as e:
                 logger.error(f"Error connecting to Milvus before creating collection: {e}")
         
+        # Ensure all documents have normalized metadata to prevent Milvus errors
+        # Esto evita los errores: "Insert missed an field" en la colección
+        normalized_documents = normalize_document_metadata(documents)
+        logger.info(f"Normalized metadata for {len(normalized_documents)} documents before sending to Milvus")
+        
         return super().from_documents(
-            documents=documents,
+            documents=normalized_documents,
             embedding=embedding,
             collection_name=collection_name,
             connection_args=connection_args,
@@ -88,6 +93,18 @@ class Milvus(BaseMilvus):
             connection_args=connection_args,
             **kwargs,
         )
+        
+    def add_documents(self, documents: List[Document], **kwargs):
+        """
+        Sobrescribe el método add_documents para normalizar los metadatos antes de agregarlo a Milvus.
+        Evita errores de 'Insert missed an field'
+        """
+        # Normalizar metadatos antes de agregar documentos
+        normalized_documents = normalize_document_metadata(documents)
+        logger.info(f"Normalized metadata for {len(normalized_documents)} documents in add_documents")
+        
+        # Llamar al método original con los documentos normalizados
+        return super().add_documents(normalized_documents, **kwargs)
 from pymilvus import connections, utility
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
@@ -96,6 +113,57 @@ import gc
 
 from app.core.config import settings
 from app.core.metrics import measure_time, EMBEDDING_RETRIEVAL_DURATION, ERROR_COUNTER
+
+def normalize_document_metadata(documents):
+    """
+    Normaliza los metadatos de los documentos para asegurar que todos los campos requeridos estén presentes.
+    Esto previene errores de 'Insert missed an field' de Milvus cuando faltan campos.
+    """
+    # Lista de todos los campos que pueden ser requeridos por Milvus
+    required_fields = ["source", "file_type", "page_number", "total_pages", "sheet_name", 
+                      "sheet_index", "total_sheets", "width", "height"]
+    
+    # Valores por defecto para campos faltantes
+    default_values = {
+        "source": "unknown",
+        "file_type": "text",
+        "page_number": 1,
+        "total_pages": 1,
+        "sheet_name": "",
+        "sheet_index": 0,
+        "total_sheets": 1,
+        "width": 612,
+        "height": 864
+    }
+    
+    for doc in documents:
+        if not hasattr(doc, 'metadata') or doc.metadata is None:
+            doc.metadata = {}
+            
+        # Asegurar que todos los campos requeridos estén presentes
+        for field, default_value in default_values.items():
+            if field not in doc.metadata:
+                doc.metadata[field] = default_value
+            elif doc.metadata[field] is None:
+                # Si el campo existe pero es None, asignarle el valor por defecto
+                doc.metadata[field] = default_value
+                
+        # Convertir valores numéricos a int/float según sea necesario
+        numeric_fields = ["page_number", "total_pages", "sheet_index", "total_sheets", "width", "height"]
+        for field in numeric_fields:
+            if field in doc.metadata:
+                try:
+                    # Intentar convertir a entero primero (para los campos que deberían ser enteros)
+                    if field in ["page_number", "total_pages", "sheet_index", "total_sheets"]:
+                        doc.metadata[field] = int(doc.metadata[field])
+                    # Para dimensiones, convertir a float
+                    else:
+                        doc.metadata[field] = float(doc.metadata[field])
+                except (ValueError, TypeError):
+                    # Si falla la conversión, usar el valor por defecto
+                    doc.metadata[field] = default_values[field]
+    
+    return documents
 
 
 class VectorStoreManager:
@@ -361,8 +429,13 @@ class VectorStoreManager:
                     while retry_count < max_retries:
                         try:
                             logger.info(f"Attempt {retry_count+1}/{max_retries} to create collection")
+                            
+                            # Normalizar metadatos para prevenir errores de 'Insert missed an field'
+                            normalized_batch = normalize_document_metadata(batch)
+                            logger.info(f"Normalized metadata for {len(normalized_batch)} documents")
+                            
                             vector_store = Milvus.from_documents(
-                                documents=batch,
+                                documents=normalized_batch,
                                 embedding=embedding_model,
                                 collection_name=collection_name,
                                 auto_id=True,
@@ -467,8 +540,12 @@ class VectorStoreManager:
                 end_idx = min(start_idx + batch_size, len(documents))
                 batch = documents[start_idx:end_idx]
                 
+                # Normalizar metadatos para prevenir errores de 'Insert missed an field'
+                normalized_batch = normalize_document_metadata(batch)
+                logger.info(f"Normalized metadata for batch {batch_idx+1}/{total_batches} ({len(normalized_batch)} documents)")
+                
                 # Add batch to collection
-                vector_store.add_documents(batch)
+                vector_store.add_documents(normalized_batch)
                 
                 # Log progress for large collections
                 if batch_idx > 0 and batch_idx % 10 == 0:

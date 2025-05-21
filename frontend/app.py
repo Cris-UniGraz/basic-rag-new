@@ -66,7 +66,7 @@ def get_api_url(endpoint: str) -> str:
 
 # Page configuration
 st.set_page_config(
-    page_title="Uni AI Chat Bot",
+    page_title="Uni AI Chatbot",
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -466,22 +466,22 @@ def display_chat():
             # Mostrar las fuentes después de cada mensaje del asistente
             if message['role'] == 'assistant' and 'sources' in message and message['sources']:
                 sources = message['sources']
-                with st.expander("Sources", expanded=False):
+                with st.expander("Quellen", expanded=False):
                     for source in sources:
                         st.markdown("---")
-                        st.write(f"**Source:** {source['source']}")
-                        st.write(f"**Page:** {source.get('page_number', 'N/A')}")
-                        st.write(f"**Type:** {source.get('file_type', 'Unknown')}")
+                        st.write(f"**Quelle:** {source['source']}")
+                        st.write(f"**Seite:** {source.get('page_number', 'N/A')}")
+                        st.write(f"**Typ:** {source.get('file_type', 'Unknown')}")
                         
                         if source.get('sheet_name'):
-                            st.write(f"**Sheet:** {source['sheet_name']}")
+                            st.write(f"**Blatt:** {source['sheet_name']}")
                         
                         if 'reranking_score' in source:
-                            st.write(f"**Score:** {source.get('reranking_score', 0):.4f}")
+                            st.write(f"**Punktestand:** {source.get('reranking_score', 0):.4f}")
                 
                 # Mostrar el tiempo de procesamiento si está disponible
                 if 'processing_time' in message:
-                    st.caption(f"Response generated in {message['processing_time']:.2f} seconds")
+                    st.caption(f"Die Antwort wird in {message['processing_time']:.2f} Sekunden generiert.")
     
     # Ya no necesitamos mostrar las fuentes al final, porque ahora se muestran con cada mensaje
     # Mantenemos el código para mostrar el tiempo de procesamiento de la última respuesta
@@ -497,7 +497,7 @@ def handle_user_input():
     
     # Reset button in the left column
     with input_cols[0]:
-        if st.button("🔄", help="Reset conversation history", key="reset_btn_input"):
+        if st.button("🗑️", help="Reset conversation history", key="reset_btn_input"):
             # Clear chat history
             st.session_state.messages = []
             st.session_state.sources = []
@@ -520,7 +520,7 @@ def handle_user_input():
     })
       
     # Show spinner while processing
-    with st.spinner("Thinking..."):
+    with st.spinner("Denken..."):
         # Send message to API
         response = send_message(user_input)
         
@@ -958,7 +958,7 @@ style="border:none; width:100px; height:85px; margin-bottom:5px;"></iframe>
 def main():
     """Main application."""
     st.markdown('<div style="height:5px"></div>', unsafe_allow_html=True)
-    st.title("Uni AI Chat Bot")
+    st.title("Uni AI Chatbot")
     
     # Si SHOW_FULL_FRONTEND es True, mostrar todas las pestañas
     if SHOW_FULL_FRONTEND:

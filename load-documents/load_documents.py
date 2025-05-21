@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 # PARA USAR ESTE SCRIPT:
 # python load_documents.py --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection uni_test_1_1
+# python load_documents.py --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
 #
 # DEPENDENCIAS REQUERIDAS:
 # pip install requests tqdm PyMuPDF docx2txt openpyxl
@@ -114,44 +115,50 @@ def process_language_directory(base_url, directory, language, collection_name):
             # Preparar datos específicos según el tipo de documento
             ext = Path(file_path).suffix.lower().lstrip('.')
             
-            # Datos base comunes para todos los tipos
-            # IMPORTANTE: Siempre agregar sheet_index como campo obligatorio
-            upload_data = {
+            # Enfoque drásticamente simplificado: conjunto mínimo de campos comunes
+            # Basado exactamente en lo que hace local-adv-rag, pero con campos adicionales requeridos
+            
+            # Lista completa de todos los campos conocidos requeridos por Milvus
+            all_required_fields = {
+                # Campos administrativos
                 'language': language,
                 'collection_name': collection_name,
-                'sheet_index': '0',  # Para satisfacer validación obligatoria del API
+                
+                # Campos de metadatos comunes
+                'source': file_name,
+                'file_type': 'text',          # Valor por defecto
+                'page_number': '1',           # Valor por defecto
+                'sheet_name': '',             # Valor por defecto
+                'sheet_index': '0',           # Valor por defecto
+                
+                # Campos específicos de dimensiones y paginación
+                'total_pages': str(int(total_pages)),
+                'total_sheets': '1',           # Valor por defecto
+                'width': str(int(width)),
+                'height': str(int(height))
             }
             
-            # Añadir campos específicos según el tipo de documento
+            # Parámetros base para la API
+            upload_data = all_required_fields.copy()
+            
+            # Sobrescribir campos específicos según el tipo de archivo
             if ext in ['xls', 'xlsx']:
-                # Para Excel necesitamos sheet_name y total_sheets (sheet_index ya está en datos base)
+                # Excel - valores específicos
                 upload_data.update({
+                    'file_type': 'excel',       # Tipo fijo para simplificar
+                    'page_number': '-1',        # Excel usa -1 en local-adv-rag
                     'sheet_name': sheet_name,
-                    'total_sheets': str(int(total_pages)),
-                    'width': str(int(width))
+                    'total_sheets': str(int(total_pages))
                 })
             elif ext in ['doc', 'docx']:
-                # Para Word necesitamos total_pages y width (sheet_index ya está en datos base)
+                # Word - valores específicos
                 upload_data.update({
-                    'total_pages': str(int(total_pages)),
-                    'width': str(int(width)),
-                    'sheet_name': ''
+                    'file_type': 'word',        # Tipo fijo para simplificar
                 })
             elif ext == 'pdf':
-                # Para PDF necesitamos total_pages, width y height (sheet_index ya está en datos base)
+                # PDF - valores específicos
                 upload_data.update({
-                    'total_pages': str(int(total_pages)),
-                    'width': str(int(width)),
-                    'height': str(int(height)),
-                    'sheet_name': ''
-                })
-            else:
-                # Para otros tipos, enviamos todos los campos posibles con valores predeterminados
-                upload_data.update({
-                    'total_pages': str(int(total_pages)),
-                    'width': str(int(width)),
-                    'height': str(int(height)),
-                    'sheet_name': ''
+                    'file_type': 'pdf',         # Tipo fijo
                 })
             
             # Depurar los datos que se enviarán
@@ -159,11 +166,16 @@ def process_language_directory(base_url, directory, language, collection_name):
             
             # Subir documento
             try:
+                # Ajustar timeout basado en tamaño del archivo
+                file_size = os.path.getsize(file_path)
+                # Si el archivo es grande (>5MB), dar más tiempo para carga
+                upload_timeout = 120 if file_size > 5*1024*1024 else 60
+                
                 response = requests.post(
                     f"{base_url}/api/documents/upload",
                     files=files_to_upload,
                     data=upload_data,
-                    timeout=60
+                    timeout=upload_timeout
                 )
 
                 response.raise_for_status()
@@ -225,7 +237,8 @@ def monitor_upload_progress(base_url, task_id):
 
     while True:
         try:
-            response = requests.get(f"{base_url}/api/documents/progress/{task_id}", timeout=30)
+            # Aumentar el timeout para archivos grandes
+            response = requests.get(f"{base_url}/api/documents/progress/{task_id}", timeout=120)
             response.raise_for_status()
 
             data = response.json()
@@ -247,14 +260,23 @@ def monitor_upload_progress(base_url, task_id):
                 
             elif status == "error":
                 progress_bar.close()
-                # Si el error es específicamente sobre sheet_index, intentamos tratar esto como éxito
-                # ya que posiblemente sea un problema temporal con la validación de la colección
+                # Analizar el mensaje de error para ser más descriptivo
                 error_message = data.get('message', 'Error desconocido')
                 
-                if "sheet_index" in error_message and "DataNotMatchException" in error_message:
-                    print(f"⚠️ Advertencia en la carga: {error_message}")
-                    print(f"⚠️ El documento probablemente se cargó correctamente a pesar del error.")
-                    success = True  # Tratar como éxito parcial
+                # Lista de campos que podrían faltar según los errores comunes
+                missing_fields = ["sheet_index", "width", "height", "total_pages", "total_sheets", "sheet_name", "page_number", "source", "file_type"]
+                
+                # Verificar si es un error de campo faltante en la colección
+                if "DataNotMatchException" in error_message:
+                    missing_field_found = False
+                    for field in missing_fields:
+                        if f"missed an field `{field}`" in error_message:
+                            print(f"⚠️ Error de campo: Milvus requiere el campo '{field}'")
+                            missing_field_found = True
+                            break
+                    
+                    if not missing_field_found:
+                        print(f"❌ Error en la carga: {error_message}")
                 else:
                     print(f"❌ Error en la carga: {error_message}")
                 break
@@ -279,7 +301,7 @@ def monitor_upload_progress(base_url, task_id):
 def get_document_pages(file_path):
     """
     Determina el número de páginas de un documento según su tipo.
-    Replica la lógica de utils/loaders.py del proyecto basic-rag-new
+    Replica la lógica de utils/loaders.py de ambos proyectos combinando sus fortalezas
     """
     ext = Path(file_path).suffix.lower().lstrip('.')
     
@@ -298,11 +320,27 @@ def get_document_pages(file_path):
         elif ext in ['doc', 'docx']:
             try:
                 import docx2txt
+                # Extrae el texto completo del archivo Word
                 text = docx2txt.process(file_path)
+                
+                # Limpia y agrupa párrafos para un mejor procesamiento
+                text = clean_extra_whitespace(text)
+                text = group_broken_paragraphs(text)
+                
                 # Dividir por saltos de página (\f) como en loaders.py
                 pages = text.split('\f')
+                
+                # Si no hay saltos de página explícitos, intentamos encontrar 
+                # límites "naturales" o simplemente lo tratamos como una página
+                if len(pages) <= 1:
+                    # En caso de documentos largos sin marcadores de página explícitos,
+                    # podríamos intentar dividir por párrafos o secciones, pero
+                    # para simplicidad lo dejamos como una página en esta versión
+                    pages = [text]
+                
                 num_pages = max(1, len(pages))  # Al menos 1 página
                 print(f"Word - Número de páginas detectadas: {num_pages}")
+                print(f"Word - Usando dimensiones predeterminadas: 612x864")
                 return num_pages
             except Exception as e:
                 print(f"Error al procesar Word {file_path}: {e}")
@@ -312,9 +350,17 @@ def get_document_pages(file_path):
         elif ext in ['xls', 'xlsx']:
             try:
                 import openpyxl
-                wb = openpyxl.load_workbook(file_path, read_only=True)
+                # Cargar el workbook con data_only=True para obtener valores en lugar de fórmulas
+                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
                 num_sheets = len(wb.sheetnames)
+                
+                # Verificar que hay al menos una hoja
+                if num_sheets == 0:
+                    print(f"Advertencia: El archivo Excel {file_path} no tiene hojas")
+                    return 1
+                
                 print(f"Excel - Número de hojas detectadas: {num_sheets}")
+                print(f"Excel - Usando dimensiones predeterminadas: 612x864")
                 return num_sheets
             except Exception as e:
                 print(f"Error al procesar Excel {file_path}: {e}")
@@ -328,6 +374,22 @@ def get_document_pages(file_path):
     except Exception as e:
         print(f"Error general al determinar páginas de {file_path}: {e}")
         return 1  # En caso de error, asumimos 1 página
+        
+# Funciones auxiliares para procesar texto - similares a las usadas en ambos proyectos
+def clean_extra_whitespace(text):
+    """
+    Limpia espacios en blanco extra del texto.
+    Convierte múltiples espacios en uno solo.
+    """
+    # Reemplazar todos los caracteres de espacio con un solo espacio
+    return " ".join(text.split())
+
+def group_broken_paragraphs(text):
+    """
+    Agrupa párrafos rotos por saltos de línea.
+    """
+    # Reemplazar saltos de línea con espacios para mejorar la lectura
+    return text.replace("\n", " ").replace("\r", " ")
 
 def get_sheet_index(file_path):
     """
@@ -358,6 +420,7 @@ def get_sheet_name(file_path):
     """
     Determina el nombre de la hoja para documentos Excel.
     Para otros tipos de documentos, devuelve una cadena vacía.
+    Implementa el enfoque utilizado en local-adv-rag combinado con basic-rag-new.
     """
     ext = Path(file_path).suffix.lower().lstrip('.')
     
@@ -366,29 +429,43 @@ def get_sheet_name(file_path):
         if ext in ['xls', 'xlsx']:
             try:
                 import openpyxl
-                wb = openpyxl.load_workbook(file_path, read_only=True)
+                # Cargar con data_only=True como hace basic-rag-new para obtener valores no fórmulas
+                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+                
+                # Verificar que hay hojas disponibles
                 if wb.sheetnames:
                     sheet_name = wb.sheetnames[0]  # Nombre de la primera hoja
                     print(f"Excel - Nombre de hoja: {sheet_name}")
+                    
+                    # Verificar que el nombre de la hoja no está vacío
+                    if not sheet_name or sheet_name.strip() == "":
+                        sheet_name = f"Sheet_{0}"  # Nombre predeterminado
+                        print(f"Excel - Usando nombre de hoja predeterminado: {sheet_name}")
+                    
                     return sheet_name
                 else:
-                    return ""
+                    # Si no hay hojas, usar un nombre predeterminado
+                    sheet_name = f"Sheet_{0}"
+                    print(f"Excel - Sin hojas, usando nombre predeterminado: {sheet_name}")
+                    return sheet_name
             except Exception as e:
                 print(f"Error al determinar sheet_name para Excel {file_path}: {e}")
-                return ""
+                # En caso de error, devolver un nombre genérico
+                return f"Sheet_{0}"
         else:
             # Para otros tipos de documentos, sheet_name es vacío
             return ""
             
     except Exception as e:
         print(f"Error general al determinar sheet_name de {file_path}: {e}")
-        return ""  # Valor por defecto en caso de error
+        return f"Sheet_{0}"  # Valor predeterminado en caso de error
 
 def get_document_dimensions(file_path):
     """
     Determina el ancho y alto de un documento según su tipo.
     Para PDF, intenta obtener las dimensiones reales del documento.
     Para otros tipos, usa valores estándar.
+    Implementa el enfoque combinado de ambos proyectos.
     
     Returns:
         tuple: (width, height) - dimensiones del documento
@@ -396,6 +473,7 @@ def get_document_dimensions(file_path):
     ext = Path(file_path).suffix.lower().lstrip('.')
     
     # Valores por defecto para todos los tipos de documentos - A4 a 72 DPI
+    # Estos valores son comunes en ambos proyectos
     DEFAULT_WIDTH = 612   # 8.5 pulgadas a 72 DPI
     DEFAULT_HEIGHT = 864  # 12 pulgadas a 72 DPI (mayor que A4 para asegurar espacio)
     
@@ -410,6 +488,12 @@ def get_document_dimensions(file_path):
                     width = page.rect.width
                     height = page.rect.height
                     print(f"PDF - Dimensiones calculadas: {width}x{height}")
+                    
+                    # Verificar que las dimensiones son valores razonables
+                    if width <= 0 or height <= 0:
+                        print(f"PDF con dimensiones inválidas, usando dimensiones predeterminadas")
+                        return DEFAULT_WIDTH, DEFAULT_HEIGHT
+                        
                     return float(width), float(height)  # Asegurar que sean float
                 else:
                     print(f"PDF sin páginas, usando dimensiones predeterminadas")
@@ -420,11 +504,13 @@ def get_document_dimensions(file_path):
                 
         # Word - usar dimensiones estándar (A4)
         elif ext in ['doc', 'docx']:
+            # En basic-rag-new y local-adv-rag ambos usan dimensiones estándar para Word
             print(f"Word - Usando dimensiones predeterminadas: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
             return DEFAULT_WIDTH, DEFAULT_HEIGHT
         
         # Excel - usar dimensiones estándar
         elif ext in ['xls', 'xlsx']:
+            # En basic-rag-new y local-adv-rag ambos usan dimensiones estándar para Excel
             print(f"Excel - Usando dimensiones predeterminadas: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
             return DEFAULT_WIDTH, DEFAULT_HEIGHT
             
@@ -449,16 +535,71 @@ def get_document_width(file_path):
     return width
 
 
+def check_api_schema(base_url):
+    """
+    Realiza una verificación directa al API para obtener información sobre el schema.
+    Esta función es útil para depurar problemas con los campos de metadatos.
+    """
+    print("\n🔍 Verificando API y esquema de metadatos...\n")
+    
+    # 1. Verificar conexión básica al API
+    try:
+        response = requests.get(f"{base_url}/docs", timeout=10)
+        if response.status_code == 200:
+            print("✅ Conexión al API verificada (documentación disponible)")
+        else:
+            print(f"⚠️ La documentación del API no está disponible. Status: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Error de conexión a {base_url}/docs: {e}")
+        
+    # 2. Verificar si hay colecciones existentes
+    try:
+        response = requests.get(f"{base_url}/api/documents/collections", timeout=10)
+        if response.status_code == 200:
+            collections = response.json()
+            print(f"✅ API de colecciones accesible. Colecciones encontradas: {len(collections)}")
+            
+            # Mostrar algunas colecciones para referencia
+            if collections:
+                print("📚 Primeras 3 colecciones en el sistema:")
+                for idx, coll in enumerate(collections[:3]):
+                    print(f"   {idx+1}. {coll.get('name', 'Sin nombre')} - Documentos: {coll.get('count', 'N/A')}")
+        else:
+            print(f"⚠️ No se pudo acceder a la lista de colecciones. Status: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Error accediendo a colecciones: {e}")
+        
+    print("\n🔍 Verificación de API y esquema finalizada\n")
+
 def main():
     """Función principal."""
     parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG desde carpetas de idioma.')
     parser.add_argument('--url', default='http://localhost:8000', help='URL base de la API de RAG')
-    parser.add_argument('--dir', required=True, help='Directorio base que contiene carpetas "de" y "en"')
+    parser.add_argument('--dir', help='Directorio base que contiene carpetas "de" y "en"')
     parser.add_argument('--collection', default='documents', help='Nombre base de la colección')
+    parser.add_argument('--test', action='store_true', help='Modo de prueba - agrega un sufijo de timestamp a la colección')
+    parser.add_argument('--check-schema', action='store_true', help='Verificar esquema API sin cargar documentos')
 
     args = parser.parse_args()
+    
+    # Si está activada la opción de verificar schema, solo hacemos eso
+    if args.check_schema:
+        check_api_schema(args.url)
+        return
+    
+    # Para cargar documentos, el directorio es obligatorio
+    if not args.dir:
+        parser.error("El argumento --dir es obligatorio para cargar documentos")
+        
+    # Si estamos en modo de prueba, agregar el timestamp a la colección
+    collection_name = args.collection
+    if args.test:
+        import time
+        timestamp = int(time.time())
+        collection_name = f"{args.collection}_test_{timestamp}"
+        print(f"Modo de prueba activado. Usando colección: {collection_name}")
 
-    upload_documents(args.url, args.dir, args.collection)
+    upload_documents(args.url, args.dir, collection_name)
 
 if __name__ == "__main__":
     main()
