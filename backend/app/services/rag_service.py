@@ -1132,41 +1132,175 @@ class RAGService:
                 # También registrar puntuación de similitud
                 self.metrics_manager.metrics['query_similarity_scores'].append(similarity)
                 
-                # Registrar la consulta RAG completa
+                # Obtener las fuentes almacenadas
                 sources = optimized_query['result'].get('sources', [])
-                self.metrics_manager.log_rag_query(
-                    query=query,
-                    processing_time=0.0,
-                    num_sources=len(sources),
-                    from_cache=True,
-                    language=language
-                )
+                original_response = optimized_query['result'].get('response', '')
                 
-                # Si hay información de coincidencia semántica y está habilitado el modo debug
-                original_response = optimized_query['result']['response']
-                if match_info and settings.SHOW_INTERNAL_MESSAGES:
-                    # Añadir nota sobre la coincidencia semántica solo en modo debug
-                    modified_response = (
-                        f"{original_response}\n\n"
-                        f"[Debug: Respuesta generada para pregunta semánticamente similar: "
-                        f"'{match_info.get('matched_query', '')}' "
-                        f"con similaridad: {similarity:.4f}]"
-                    )
-                    return {
-                        'response': modified_response,
-                        'sources': sources,
-                        'from_cache': True,
-                        'semantic_match': match_info,
-                        'processing_time': 0.0
-                    }
-                
-                return {
-                    'response': original_response,
-                    'sources': sources,
-                    'from_cache': True,
-                    'semantic_match': match_info,
-                    'processing_time': 0.0
-                }
+                # NUEVA LÓGICA: Si hay respuesta cacheada válida, usar sus chunks para generar nueva respuesta
+                if original_response and sources:
+                    logger.info(f"Found valid semantic cache with response (length: {len(original_response)}) and {len(sources)} sources")
+                    logger.info("Using cached chunks to generate new response via reranking")
+                    
+                    # Usar chunks de la query similar para reranking
+                    try:
+                        # Convertir fuentes almacenadas en documentos para reranking
+                        cached_documents = []
+                        for source_metadata in sources:
+                            if isinstance(source_metadata, dict):
+                                # Crear documento temporal con el contenido del chunk
+                                chunk_content = source_metadata.get('chunk_content', source_metadata.get('source', ''))
+                                cached_doc = Document(
+                                    page_content=chunk_content,
+                                    metadata=source_metadata
+                                )
+                                cached_documents.append(cached_doc)
+                        
+                        if cached_documents:
+                            logger.info(f"Using {len(cached_documents)} cached chunks for reranking with new query")
+                            
+                            # Realizar reranking con los chunks almacenados y la nueva query
+                            reranker_model = (
+                                settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
+                                else settings.ENGLISH_COHERE_RERANKING_MODEL
+                            )
+                            
+                            reranked_docs = await self.rerank_docs(query, cached_documents, reranker_model)
+                            
+                            # Preparar contexto para el LLM con los documentos rerankeados
+                            filtered_context = []
+                            response_sources = []
+                            
+                            # Ordenar documentos por puntuación de reranking
+                            reranked_docs.sort(
+                                key=lambda x: x.metadata.get('reranking_score', 0), 
+                                reverse=True
+                            )
+                            
+                            # NUEVA VALIDACIÓN: Verificar si al menos un chunk tiene puntaje suficiente
+                            relevant_docs = [doc for doc in reranked_docs if doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE]
+                            
+                            if not relevant_docs:
+                                logger.warning(f"No chunks with sufficient reranking score (>= {settings.MIN_RERANKING_SCORE}) found in cached chunks")
+                                logger.info("Falling back to normal RAG processing due to insufficient chunk relevance")
+                                # Continuar con el procesamiento normal sin usar chunks cacheados
+                            else:
+                                logger.info(f"Found {len(relevant_docs)} relevant chunks after reranking (score >= {settings.MIN_RERANKING_SCORE})")
+                                
+                                # Tomar los documentos principales hasta el límite
+                                for document in reranked_docs[:settings.MAX_CHUNKS_LLM]:
+                                    # Solo incluir documentos con puntaje suficiente
+                                    if document.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE:
+                                        source = {
+                                            'source': document.metadata.get('source', 'Unknown'),
+                                            'page_number': document.metadata.get('page_number', 'N/A'),
+                                            'file_type': document.metadata.get('file_type', 'Unknown'),
+                                            'sheet_name': document.metadata.get('sheet_name', ''),
+                                            'reranking_score': document.metadata.get('reranking_score', 0)
+                                        }
+                                        
+                                        if source not in response_sources:
+                                            response_sources.append(source)
+                                        
+                                        filtered_context.append(document)
+                                
+                                if filtered_context:
+                                    # Generar nueva respuesta con chunks rerankeados
+                                    matching_terms = find_glossary_terms_with_explanation(query, language)
+                                    
+                                    if not matching_terms:
+                                        prompt_template = ChatPromptTemplate.from_template(
+                                            """
+                                            You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                                            Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                                            Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                                            Give always detailed answers in {language}.
+
+                                            QUERY: ```{question}```
+
+                                            CONTEXT: ```{context}```
+                                            """
+                                        )
+                                    else:
+                                        # Include glossary terms and their explanations in the prompt
+                                        relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                                                   for term, explanation in matching_terms])
+
+                                        prompt_template = ChatPromptTemplate.from_template(
+                                            """
+                                            You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                                            Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                                            Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+
+                                            The following terms from the query have specific meanings:
+                                            {glossary}
+
+                                            Please consider these specific meanings when responding. Give always detailed answers in {language}.
+
+                                            QUERY: ```{question}```
+
+                                            CONTEXT: ```{context}```
+                                            """
+                                        )
+                                    
+                                    # Create processing chain
+                                    chain = prompt_template | self.llm_provider | StrOutputParser()
+
+                                    # Generate response
+                                    if matching_terms:
+                                        new_response = await chain.ainvoke({
+                                            "context": filtered_context,
+                                            "language": language,
+                                            "question": query,
+                                            "glossary": relevant_glossary
+                                        })
+                                    else:
+                                        new_response = await chain.ainvoke({
+                                            "context": filtered_context,
+                                            "language": language,
+                                            "question": query
+                                        })
+                                    
+                                    processing_time = time.time() - start_time
+                                    
+                                    # Registrar la consulta RAG completa
+                                    self.metrics_manager.log_rag_query(
+                                        query=query,
+                                        processing_time=processing_time,
+                                        num_sources=len(response_sources),
+                                        from_cache=False,  # Es una nueva respuesta aunque usa chunks cacheados
+                                        language=language
+                                    )
+                                    
+                                    # Almacenar la nueva respuesta en caché
+                                    enhanced_sources_for_cache = []
+                                    for doc in filtered_context:
+                                        enhanced_metadata = doc.metadata.copy()
+                                        enhanced_metadata['chunk_content'] = doc.page_content  # Incluir contenido del chunk
+                                        enhanced_sources_for_cache.append(enhanced_metadata)
+                                    
+                                    self.query_optimizer._store_llm_response(query, new_response, language, enhanced_sources_for_cache)
+                                    
+                                    logger.info(f"Generated new response using {len(filtered_context)} reranked cached chunks from semantic match")
+                                    return {
+                                        'response': new_response,
+                                        'sources': response_sources,
+                                        'from_cache': False,
+                                        'semantic_match': match_info,
+                                        'processing_time': processing_time,
+                                        'used_cached_chunks': True
+                                    }
+                        
+                        # Si no hay chunks válidos después del reranking o filtered_context está vacío, continuar con procesamiento normal
+                        logger.warning("No valid cached chunks found after reranking or filtered context is empty, continuing with normal RAG processing")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing cached chunks for semantic match: {e}")
+                        # Continuar con procesamiento normal
+                else:
+                    # Si no hay respuesta cacheada válida, continuar con el proceso habitual
+                    logger.info("No valid cached response found in semantic match, continuing with normal RAG processing")
 
             # Generate all query variations in one LLM call (original, translated, step-back in both languages)
             logger.info(f"Generating query variations for: '{query}'")
@@ -1402,7 +1536,15 @@ class RAGService:
             
             # Almacenar en caché solo si hay documentos relevantes
             if has_relevant_docs:
-                self.query_optimizer._store_llm_response(query, response, language, sources_for_cache)
+                # MODIFICADO: Incluir contenido de chunks en sources_for_cache
+                enhanced_sources_for_cache = []
+                for doc in filtered_context:
+                    if hasattr(doc, 'metadata') and doc.metadata and doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE:
+                        enhanced_metadata = doc.metadata.copy()
+                        enhanced_metadata['chunk_content'] = doc.page_content  # Incluir contenido del chunk
+                        enhanced_sources_for_cache.append(enhanced_metadata)
+                
+                self.query_optimizer._store_llm_response(query, response, language, enhanced_sources_for_cache)
                 logger.info(f"Respuesta almacenada en caché para la consulta: '{query}' (documentos relevantes encontrados)")
             else:
                 logger.warning(f"No se almacenó la respuesta en caché para la consulta: '{query}' (no hay documentos con puntuación suficiente)")

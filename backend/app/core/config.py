@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     
     # Query Optimization Settings
     QUERY_OPTIMIZATION_ENABLED: bool = Field(default=True)
-    QUERY_SIMILARITY_THRESHOLD: float = Field(default=0.75)  # Umbral de similitud para consultas
+    QUERY_SIMILARITY_THRESHOLD: float = Field(default=0.85)  # Umbral de similitud para consultas (reducido de 1.0 a 0.85)
     QUERY_HISTORY_SIZE: int = Field(default=100)  # Tamaño del historial de consultas
     APPLY_QUERY_REWRITING: bool = Field(default=True)  # Reescribir consultas para mayor precisión
     SEMANTIC_CACHING_ENABLED: bool = Field(default=True)  # Caché basado en similitud semántica

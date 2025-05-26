@@ -89,6 +89,11 @@ class QueryOptimizer:
         # Verificar si el caché avanzado está habilitado
         if not self.enabled:
             return
+        
+        # MODIFICADO: Verificar que hay respuesta válida y fuentes encontradas
+        if not response or not response.strip():
+            self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque la respuesta está vacía")
+            return
             
         query_hash = self._generate_query_hash(query)
         
@@ -113,8 +118,8 @@ class QueryOptimizer:
                     if validated_source['reranking_score'] >= settings.MIN_RERANKING_SCORE:
                         has_relevant_docs = True
         
-        # Solo almacenar en caché si hay al menos un documento relevante
-        if has_relevant_docs or not sources:  # También guardar si no hay sources especificadas (caso legacy)
+        # MODIFICADO: Solo almacenar en caché si hay respuesta Y fuentes relevantes
+        if has_relevant_docs and validated_sources:
             self.llm_cache[query_hash] = {
                 'response': response,
                 'timestamp': datetime.now(),
@@ -125,8 +130,12 @@ class QueryOptimizer:
 
             # Limpiar caché automáticamente cuando sea necesario
             self._auto_cleanup_if_needed()
+            self.logger.info(f"Respuesta almacenada en caché para la consulta: '{query[:50]}...' con {len(validated_sources)} fuentes")
         else:
-            logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque no contiene documentos relevantes")
+            if not validated_sources:
+                self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque no se encontraron fuentes")
+            else:
+                self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque no contiene documentos relevantes")
 
     def get_llm_response(self, query: str, language: str) -> Optional[Dict]:
         """
@@ -385,15 +394,23 @@ class QueryOptimizer:
             self.metrics.metrics['query_similarity_scores'].append(similarity)
             
             if similarity > highest_similarity and similarity >= self.query_similarity_threshold:
-                highest_similarity = similarity
-                best_match = {
-                    'query': data['query'],
-                    'similarity': similarity,
-                    'query_hash': query_hash
-                }
+                # Verificar que existe una respuesta en caché para esta consulta
+                cached_result = self._get_cached_result(data['query'], language)
+                
+                # También verificar en el caché LLM
+                llm_cached_result = self.get_llm_response(data['query'], language)
+                
+                # Solo considerar como coincidencia si tiene una respuesta cacheada válida
+                if cached_result or (llm_cached_result and llm_cached_result.get('response')):
+                    highest_similarity = similarity
+                    best_match = {
+                        'query': data['query'],
+                        'similarity': similarity,
+                        'query_hash': query_hash
+                    }
         
         if best_match:
-            self.logger.info(f"Found similar query with similarity {best_match['similarity']:.4f}: '{best_match['query']}'")
+            self.logger.info(f"Found similar query with similarity {best_match['similarity']:.4f}: '{best_match['query']}' and valid cached response")
             
         return best_match
     
@@ -488,21 +505,33 @@ class QueryOptimizer:
         if similar_query and self.semantic_caching_enabled:
             # Verificar si hay una respuesta en caché para la consulta similar
             similar_cached = self._get_cached_result(similar_query['query'], language)
-            if similar_cached:
+            
+            # Si no hay en historial, verificar en el caché LLM
+            llm_cached = None
+            if not similar_cached:
+                llm_cached = self.get_llm_response(similar_query['query'], language)
+                
+            # Usar cualquiera de las dos cachés que tenga respuesta
+            if similar_cached or (llm_cached and llm_cached.get('response')):
                 self.metrics.metrics['cache_hits'] += 1
                 self.logger.info(f"Semantic cache hit with similarity {similar_query['similarity']:.4f}")
                 
                 # Registrar la similitud para métricas
                 self.metrics.metrics['query_similarity_scores'].append(similar_query['similarity'])
                 
+                # Usar la caché que tenga respuesta
+                cache_result = similar_cached if similar_cached else llm_cached
+                
                 # Añadir información de similitud al resultado
-                similar_cached['semantic_match'] = {
+                cache_result['semantic_match'] = {
                     'original_query': query,
                     'matched_query': similar_query['query'],
                     'similarity': similar_query['similarity']
                 }
                 
-                return {'result': similar_cached, 'source': 'semantic_cache'}
+                self.logger.info(f"Returning cached response for similar query with content length: {len(cache_result.get('response', ''))}")
+                
+                return {'result': cache_result, 'source': 'semantic_cache'}
         
         # Almacenar el embedding para futuras comparaciones
         self._store_query_embedding(query, query_embedding, language)
