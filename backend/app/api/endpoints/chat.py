@@ -224,7 +224,7 @@ async def chat(
                 detail="Failed to initialize retrieval models. Please try again later."
             )
         
-        # Process query
+        # Process query with advanced pipeline selection
         logger.debug("Processing query with RAG service")
         try:
             # Handle the case where one or both retrievers might be None
@@ -235,29 +235,83 @@ async def chat(
                     detail="No valid retrievers available. Please upload documents first."
                 )
                 
-            # Process query with available retrievers
+            # Process query with available retrievers using advanced async pipeline
             logger.info(f"Processing query with available retrievers - German: {german_retriever is not None}, English: {english_retriever is not None}")
-            result = await rag_service.process_queries_and_combine_results(
-                user_query,
-                german_retriever,
-                english_retriever,
-                chat_history,
-                language
-            )
-            logger.debug("Query processed successfully")
-        except asyncio.TimeoutError:
-            logger.error("Request timed out when processing the query")
-            ERROR_COUNTER.labels(error_type="TimeoutError", component="rag_service").inc()
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Request timed out. Please try a simpler query or try again later."
-            )
+            
+            # Select processing method based on configuration
+            if settings.ENABLE_ASYNC_PIPELINE:
+                logger.info("Using advanced async pipeline for query processing")
+                try:
+                    result = await asyncio.wait_for(
+                        rag_service.process_queries_with_async_pipeline(
+                            user_query,
+                            german_retriever,
+                            english_retriever,
+                            chat_history,
+                            language
+                        ),
+                        timeout=settings.CHAT_REQUEST_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"Chat request timed out after {settings.CHAT_REQUEST_TIMEOUT} seconds")
+                    raise HTTPException(
+                        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                        detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
+                    )
+                
+                # Log pipeline metrics if available
+                if 'pipeline_metrics' in result and settings.ASYNC_PIPELINE_PHASE_LOGGING:
+                    metrics = result['pipeline_metrics']
+                    async_metadata_processor.log_async("INFO", 
+                        "Async pipeline performance summary",
+                        {
+                            "total_time": metrics.get('total_time', 0),
+                            "phase_breakdown": {
+                                "cache_optimization": metrics.get('phase1_time', 0),
+                                "query_generation": metrics.get('phase2_time', 0),
+                                "retrieval": metrics.get('phase3_time', 0),
+                                "processing_reranking": metrics.get('phase4_time', 0),
+                                "response_preparation": metrics.get('phase5_time', 0),
+                                "llm_generation": metrics.get('phase6_time', 0)
+                            },
+                            "query": user_query[:50] + "..." if len(user_query) > 50 else user_query
+                        })
+                
+                logger.debug("Advanced async pipeline completed successfully")
+            else:
+                logger.info("Using legacy sequential pipeline for query processing")
+                try:
+                    result = await asyncio.wait_for(
+                        rag_service.process_queries_and_combine_results(
+                            user_query,
+                            german_retriever,
+                            english_retriever,
+                            chat_history,
+                            language
+                        ),
+                        timeout=settings.CHAT_REQUEST_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"Chat request timed out after {settings.CHAT_REQUEST_TIMEOUT} seconds")
+                    raise HTTPException(
+                        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                        detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
+                    )
+                logger.debug("Legacy pipeline completed successfully")
         except Exception as e:
             logger.error(f"Error during RAG processing: {e}")
-            ERROR_COUNTER.labels(error_type="ProcessingError", component="rag_service").inc()
+            logger.error(f"Exception type: {type(e).__name__}")
+            ERROR_COUNTER.labels(error_type=type(e).__name__, component="rag_service").inc()
+            
+            # Provide user-friendly error messages
+            if "CancelledError" in str(e) or "cancelled" in str(e).lower():
+                detail = "Es tut mir leid, bei der Bearbeitung Ihrer Anfrage ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
+            else:
+                detail = "Es tut mir leid, bei der Bearbeitung Ihrer Anfrage ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
+            
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error processing your query: {str(e)}"
+                detail=detail
             )
         
         # Calculate processing time

@@ -1881,6 +1881,742 @@ class RAGService:
             
             return retrieved_docs
     
+    async def process_queries_with_async_pipeline(
+        self,
+        query: str,
+        retriever_de: Any,
+        retriever_en: Any,
+        chat_history: List[Tuple[str, str]] = [],
+        language: str = "german",
+    ) -> Dict[str, Any]:
+        """
+        Advanced asynchronous pipeline for query processing with maximum parallelization.
+        
+        This pipeline optimizes performance by:
+        1. Running cache check, query optimization, and initial setup in parallel
+        2. Overlapping query generation with embedding computation
+        3. Parallelizing retrieval operations across all query variations
+        4. Combining results efficiently with concurrent reranking
+        
+        Args:
+            query: User query
+            retriever_de: German retriever (can be None if collection doesn't exist)
+            retriever_en: English retriever (can be None if collection doesn't exist)
+            chat_history: Chat history
+            language: Primary language for the response
+            
+        Returns:
+            Dictionary with response and metadata
+        """
+        def _extract_valid_results(results: List[Any], task_descriptions: List[str] = None) -> List[Any]:
+            """Extract valid results from asyncio.gather results, filtering out exceptions and cancelled tasks."""
+            valid_results = []
+            task_descriptions = task_descriptions or [f"task_{i}" for i in range(len(results))]
+            
+            for i, result in enumerate(results):
+                task_name = task_descriptions[i] if i < len(task_descriptions) else f"task_{i}"
+                
+                if isinstance(result, Exception):
+                    if isinstance(result, asyncio.CancelledError):
+                        logger.warning(f"Task '{task_name}' was cancelled")
+                    elif isinstance(result, asyncio.TimeoutError):
+                        logger.warning(f"Task '{task_name}' timed out")
+                    else:
+                        logger.error(f"Task '{task_name}' failed: {result}")
+                    continue
+                    
+                # Additional check for None results
+                if result is None:
+                    logger.warning(f"Task '{task_name}' returned None result")
+                    continue
+                    
+                valid_results.append(result)
+            
+            logger.debug(f"Extracted {len(valid_results)} valid results from {len(results)} total results")
+            return valid_results
+
+        try:
+            pipeline_start_time = time.time()
+            sources_for_cache = []
+            
+            logger.info(f"Starting async pipeline for query: '{query[:50]}...'")
+            
+            # === PHASE 1: PARALLEL INITIALIZATION AND CACHE CHECK ===
+            phase1_start = time.time()
+            
+            async def cache_check_task():
+                """Check cache and query optimization in parallel."""
+                cached_result = self.query_optimizer.get_llm_response(query, language)
+                if cached_result:
+                    logger.info(f"Cache hit in async pipeline - Response length: {len(cached_result.get('response', ''))}")
+                    self.metrics_manager.log_rag_query(
+                        query=query,
+                        processing_time=0.0,
+                        num_sources=len(cached_result.get('sources', [])),
+                        from_cache=True,
+                        language=language
+                    )
+                    return {
+                        'response': cached_result['response'],
+                        'sources': cached_result['sources'],
+                        'from_cache': True,
+                        'processing_time': 0.0
+                    }
+                return None
+            
+            async def embedding_generation_task():
+                """Generate embedding for query optimization in parallel."""
+                embedding_model = (
+                    embedding_manager.german_model if language == "german" 
+                    else embedding_manager.english_model
+                )
+                return await self.query_optimizer.optimize_query(query, language, embedding_model)
+            
+            async def glossary_check_task():
+                """Check for glossary terms in parallel."""
+                from app.utils.glossary import find_glossary_terms_with_explanation
+                return find_glossary_terms_with_explanation(query, language)
+            
+            # Execute Phase 1 tasks in parallel
+            phase1_results = await asyncio.gather(
+                cache_check_task(),
+                embedding_generation_task(),
+                glossary_check_task(),
+                return_exceptions=True
+            )
+            
+            # Safely extract results
+            cache_result = phase1_results[0]
+            optimized_query = phase1_results[1]  
+            matching_terms = phase1_results[2]
+            
+            phase1_time = time.time() - phase1_start
+            logger.debug(f"Phase 1 (cache/optimization) completed in {phase1_time:.2f}s")
+            
+            # Handle cache hit
+            if cache_result and not isinstance(cache_result, Exception):
+                logger.info("Early return from cache in async pipeline")
+                return cache_result
+            
+            # Handle optimization result
+            if isinstance(optimized_query, Exception):
+                logger.warning(f"Query optimization failed: {optimized_query}")
+                optimized_query = {'result': {'original_query': query}, 'source': 'new'}
+            
+            # Handle glossary terms result
+            if isinstance(matching_terms, Exception):
+                logger.warning(f"Glossary check failed: {matching_terms}")
+                matching_terms = []
+            
+            # Handle semantic cache result
+            if optimized_query['source'] == 'cache':
+                logger.info("Exact cache hit from optimizer")
+                return {'result': optimized_query['result'], 'source': 'cache'}
+            elif optimized_query['source'] == 'semantic_cache':
+                logger.info("Semantic cache hit from optimizer")
+                return await self._handle_semantic_cache_result(optimized_query, query, language)
+            
+            # === PHASE 2: PARALLEL QUERY GENERATION AND PREPARATION ===
+            phase2_start = time.time()
+            
+            async def query_variations_task():
+                """Generate all query variations in parallel."""
+                return await self.generate_all_queries_in_one_call(query, language)
+            
+            async def retriever_validation_task():
+                """Validate retrievers in parallel."""
+                return {
+                    'german_available': retriever_de is not None,
+                    'english_available': retriever_en is not None
+                }
+            
+            # Execute Phase 2 tasks in parallel
+            phase2_results = await asyncio.gather(
+                query_variations_task(),
+                retriever_validation_task(),
+                return_exceptions=True
+            )
+            
+            # Safely extract results
+            queries_result = phase2_results[0]
+            retriever_status = phase2_results[1]
+            
+            if isinstance(queries_result, Exception):
+                logger.error(f"Query generation failed: {queries_result}")
+                raise queries_result
+            
+            if isinstance(retriever_status, Exception):
+                logger.warning(f"Retriever validation failed: {retriever_status}")
+                # Use fallback
+                retriever_status = {
+                    'german_available': retriever_de is not None,
+                    'english_available': retriever_en is not None
+                }
+            
+            phase2_time = time.time() - phase2_start
+            logger.debug(f"Phase 2 (query generation) completed in {phase2_time:.2f}s")
+            
+            # Extract query variations
+            query_de = queries_result["query_de"]
+            query_en = queries_result["query_en"]
+            step_back_query_de = queries_result["step_back_query_de"]
+            step_back_query_en = queries_result["step_back_query_en"]
+            
+            logger.debug(f"Generated queries - DE: '{query_de[:30]}...', EN: '{query_en[:30]}...', "
+                        f"Step-back DE: '{step_back_query_de[:30]}...', Step-back EN: '{step_back_query_en[:30]}...'")
+            
+            # === PHASE 3: PARALLEL DOCUMENT RETRIEVAL ===
+            phase3_start = time.time()
+            
+            retrieval_tasks = []
+            task_descriptions = []
+            
+            # Add German retrieval tasks if available
+            if retriever_status.get('german_available', False):
+                # Original German query
+                retrieval_tasks.append(
+                    self.retrieve_context_without_reranking(query_de, retriever_de, chat_history, "german")
+                )
+                task_descriptions.append("German original")
+                
+                # Step-back German query
+                if step_back_query_de:
+                    retrieval_tasks.append(
+                        self.retrieve_context_without_reranking(step_back_query_de, retriever_de, chat_history, "german")
+                    )
+                    task_descriptions.append("German step-back")
+            
+            # Add English retrieval tasks if available
+            if retriever_status.get('english_available', False):
+                # Original English query
+                retrieval_tasks.append(
+                    self.retrieve_context_without_reranking(query_en, retriever_en, chat_history, "english")
+                )
+                task_descriptions.append("English original")
+                
+                # Step-back English query
+                if step_back_query_en:
+                    retrieval_tasks.append(
+                        self.retrieve_context_without_reranking(step_back_query_en, retriever_en, chat_history, "english")
+                    )
+                    task_descriptions.append("English step-back")
+            
+            if not retrieval_tasks:
+                logger.warning("No retrieval tasks available - no valid retrievers")
+                return {
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.",
+                    'sources': [], 
+                    'from_cache': False,
+                    'processing_time': time.time() - pipeline_start_time
+                }
+            
+            logger.info(f"Executing {len(retrieval_tasks)} retrieval tasks in parallel: {task_descriptions}")
+            
+            # Execute all retrieval tasks in parallel with timeout
+            try:
+                retrieval_results = await asyncio.wait_for(
+                    asyncio.gather(*retrieval_tasks, return_exceptions=True),
+                    timeout=settings.RETRIEVAL_TASK_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Retrieval tasks timed out after {settings.RETRIEVAL_TASK_TIMEOUT} seconds")
+                # Create fallback results with timeouts
+                retrieval_results = [asyncio.TimeoutError("Retrieval timeout") for _ in retrieval_tasks]
+            
+            phase3_time = time.time() - phase3_start
+            logger.debug(f"Phase 3 (retrieval) completed in {phase3_time:.2f}s with {len(retrieval_results)} results")
+            
+            # === PHASE 4: PARALLEL RESULT PROCESSING AND RERANKING ===
+            phase4_start = time.time()
+            
+            async def document_consolidation_task():
+                """Consolidate and deduplicate documents using improved result extraction."""
+                all_retrieved_docs = []
+                seen_contents = set()
+                
+                # Filter valid results from retrieval tasks
+                valid_retrieval_results = _extract_valid_results(retrieval_results, task_descriptions)
+                
+                for result in valid_retrieval_results:
+                    # Ensure result is iterable (list of documents)
+                    try:
+                        if not hasattr(result, '__iter__'):
+                            logger.warning(f"Retrieval result is not iterable: {type(result)}")
+                            continue
+                            
+                        if result:
+                            for document in result:
+                                if not isinstance(document, Document):
+                                    continue
+                                
+                                # Ensure metadata exists
+                                if not hasattr(document, 'metadata') or document.metadata is None:
+                                    document.metadata = {}
+                                
+                                # Deduplicate by content hash
+                                content_hash = hash(document.page_content)
+                                if content_hash not in seen_contents:
+                                    seen_contents.add(content_hash)
+                                    all_retrieved_docs.append(document)
+                                    
+                    except Exception as e:
+                        logger.error(f"Error processing retrieval result: {e}")
+                        continue
+                
+                logger.info(f"Consolidated {len(all_retrieved_docs)} unique documents from {len(valid_retrieval_results)} valid retrieval results")
+                return all_retrieved_docs
+            
+            async def reranking_preparation_task():
+                """Prepare reranking model selection."""
+                reranker_model = (
+                    settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
+                    else settings.ENGLISH_COHERE_RERANKING_MODEL
+                )
+                return reranker_model
+            
+            # Execute Phase 4 tasks in parallel
+            phase4_results = await asyncio.gather(
+                document_consolidation_task(),
+                reranking_preparation_task(),
+                return_exceptions=True
+            )
+            
+            # Safely extract results
+            consolidated_docs = phase4_results[0]
+            reranker_model = phase4_results[1]
+            
+            if isinstance(consolidated_docs, Exception):
+                logger.error(f"Document consolidation failed: {consolidated_docs}")
+                raise consolidated_docs
+            
+            if isinstance(reranker_model, Exception):
+                logger.warning(f"Reranker model preparation failed: {reranker_model}")
+                # Use fallback
+                reranker_model = (
+                    settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
+                    else settings.ENGLISH_COHERE_RERANKING_MODEL
+                )
+            
+            if not consolidated_docs:
+                logger.warning("No documents retrieved after consolidation")
+                return {
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.",
+                    'sources': [], 
+                    'from_cache': False,
+                    'processing_time': time.time() - pipeline_start_time
+                }
+            
+            # Perform reranking
+            reranked_docs = await self.rerank_docs(query, consolidated_docs, reranker_model)
+            
+            phase4_time = time.time() - phase4_start
+            logger.debug(f"Phase 4 (processing/reranking) completed in {phase4_time:.2f}s")
+            
+            # === PHASE 5: PARALLEL RESPONSE GENERATION PREPARATION ===
+            phase5_start = time.time()
+            
+            async def context_preparation_task():
+                """Prepare context for LLM."""
+                filtered_context = []
+                sources = []
+                
+                # Sort documents by reranking score
+                reranked_docs.sort(key=lambda x: x.metadata.get('reranking_score', 0), reverse=True)
+                
+                # Select top documents
+                for document in reranked_docs[:settings.MAX_CHUNKS_LLM]:
+                    source = {
+                        'source': document.metadata.get('source', 'Unknown'),
+                        'page_number': document.metadata.get('page_number', 'N/A'),
+                        'file_type': document.metadata.get('file_type', 'Unknown'),
+                        'sheet_name': document.metadata.get('sheet_name', ''),
+                        'reranking_score': document.metadata.get('reranking_score', 0)
+                    }
+                    
+                    if source not in sources:
+                        sources.append(source)
+                    
+                    filtered_context.append(document)
+                    sources_for_cache.append(document.metadata)
+                
+                return filtered_context, sources
+            
+            def create_prompt_preparation_task(terms):
+                """Create prompt preparation task with captured terms."""
+                async def prompt_preparation_task():
+                    """Prepare prompt template."""
+                    # Use terms passed as parameter
+                    current_matching_terms = terms if not isinstance(terms, Exception) else []
+                    
+                    if not current_matching_terms:
+                        prompt_template = ChatPromptTemplate.from_template(
+                            """
+                            You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                            Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                            Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                            Give always detailed answers in {language}.
+
+                            QUERY: ```{question}```
+
+                            CONTEXT: ```{context}```
+                            """
+                        )
+                        return prompt_template, None
+                    else:
+                        relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                                     for term, explanation in current_matching_terms])
+                        prompt_template = ChatPromptTemplate.from_template(
+                            """
+                            You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                            Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                            Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+
+                            The following terms from the query have specific meanings:
+                            {glossary}
+
+                            Please consider these specific meanings when responding. Give always detailed answers in {language}.
+
+                            QUERY: ```{question}```
+
+                            CONTEXT: ```{context}```
+                            """
+                        )
+                        return prompt_template, relevant_glossary
+                
+                return prompt_preparation_task
+            
+            # Execute Phase 5 tasks in parallel
+            phase5_results = await asyncio.gather(
+                context_preparation_task(),
+                create_prompt_preparation_task(matching_terms)(),
+                return_exceptions=True
+            )
+            
+            # Safely extract results with proper exception handling
+            context_sources_result = phase5_results[0]
+            prompt_result = phase5_results[1]
+            
+            # Check for exceptions in context preparation
+            if isinstance(context_sources_result, Exception):
+                logger.error(f"Context preparation failed: {context_sources_result}")
+                raise context_sources_result
+            
+            # Check for exceptions in prompt preparation
+            if isinstance(prompt_result, Exception):
+                logger.error(f"Prompt preparation failed: {prompt_result}")
+                # Use fallback for prompt preparation
+                prompt_result = (ChatPromptTemplate.from_template("""
+                    You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                    Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                    Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                    Give always detailed answers in {language}.
+
+                    QUERY: ```{question}```
+
+                    CONTEXT: ```{context}```
+                    """), None)
+            
+            # Safely extract values
+            try:
+                filtered_context, sources = context_sources_result
+                prompt_template, relevant_glossary = prompt_result
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error unpacking Phase 5 results: {e}")
+                raise RuntimeError(f"Failed to process Phase 5 results: {str(e)}")
+            
+            phase5_time = time.time() - phase5_start
+            logger.debug(f"Phase 5 (response preparation) completed in {phase5_time:.2f}s")
+            
+            # === PHASE 6: LLM RESPONSE GENERATION ===
+            phase6_start = time.time()
+            
+            # Create processing chain
+            chain = prompt_template | self.llm_provider | StrOutputParser()
+            
+            # Generate response with timeout
+            try:
+                if relevant_glossary:
+                    response = await asyncio.wait_for(
+                        chain.ainvoke({
+                            "context": filtered_context,
+                            "language": language,
+                            "question": query,
+                            "glossary": relevant_glossary
+                        }),
+                        timeout=settings.LLM_GENERATION_TIMEOUT
+                    )
+                else:
+                    response = await asyncio.wait_for(
+                        chain.ainvoke({
+                            "context": filtered_context,
+                            "language": language,
+                            "question": query
+                        }),
+                        timeout=settings.LLM_GENERATION_TIMEOUT
+                    )
+            except asyncio.TimeoutError:
+                logger.error(f"LLM generation timed out after {settings.LLM_GENERATION_TIMEOUT} seconds")
+                response = "Leider konnte ich aufgrund einer Zeitüberschreitung keine Antwort generieren. Bitte versuchen Sie es mit einer einfacheren Anfrage erneut."
+            
+            phase6_time = time.time() - phase6_start
+            logger.debug(f"Phase 6 (LLM generation) completed in {phase6_time:.2f}s")
+            
+            # === FINAL PROCESSING ===
+            total_processing_time = time.time() - pipeline_start_time
+            
+            # Log detailed phase timings
+            async_metadata_processor.log_async("INFO", 
+                "Async pipeline phase timings",
+                {
+                    "total_time": total_processing_time,
+                    "phase1_cache_optimization": phase1_time,
+                    "phase2_query_generation": phase2_time,
+                    "phase3_retrieval": phase3_time,
+                    "phase4_processing_reranking": phase4_time,
+                    "phase5_response_preparation": phase5_time,
+                    "phase6_llm_generation": phase6_time,
+                    "query": query[:50] + "..." if len(query) > 50 else query
+                })
+            
+            # Register metrics
+            self.metrics_manager.log_rag_query(
+                query=query,
+                processing_time=total_processing_time,
+                num_sources=len(sources),
+                from_cache=False,
+                language=language
+            )
+            
+            # Store in cache if valid documents
+            has_relevant_docs = any(
+                doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE 
+                for doc in filtered_context if hasattr(doc, 'metadata') and doc.metadata
+            )
+            
+            if has_relevant_docs:
+                enhanced_sources_for_cache = []
+                for doc in filtered_context:
+                    if hasattr(doc, 'metadata') and doc.metadata and doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE:
+                        enhanced_metadata = doc.metadata.copy()
+                        enhanced_metadata['chunk_content'] = doc.page_content
+                        enhanced_sources_for_cache.append(enhanced_metadata)
+                
+                self.query_optimizer._store_llm_response(query, response, language, enhanced_sources_for_cache)
+                logger.info(f"Response cached for query: '{query[:50]}...' (relevant documents found)")
+            
+            logger.info(f"Async pipeline completed in {total_processing_time:.2f}s "
+                       f"(phases: {phase1_time:.2f}+{phase2_time:.2f}+{phase3_time:.2f}+{phase4_time:.2f}+{phase5_time:.2f}+{phase6_time:.2f})")
+            
+            return {
+                'response': response,
+                'sources': sources,
+                'from_cache': False,
+                'processing_time': total_processing_time,
+                'documents': filtered_context,
+                'sources_metadata': sources_for_cache,
+                'pipeline_metrics': {
+                    'phase1_time': phase1_time,
+                    'phase2_time': phase2_time, 
+                    'phase3_time': phase3_time,
+                    'phase4_time': phase4_time,
+                    'phase5_time': phase5_time,
+                    'phase6_time': phase6_time,
+                    'total_time': total_processing_time
+                }
+            }
+            
+        except Exception as e:
+            error_time = time.time() - pipeline_start_time
+            logger.error(f"Error in async pipeline: {e}")
+            
+            # Register error metrics
+            self.metrics_manager.log_error(
+                error_type="async_pipeline_error",
+                details=str(e),
+                component="async_pipeline"
+            )
+            
+            self.metrics_manager.log_rag_query(
+                query=query,
+                processing_time=error_time,
+                num_sources=0,
+                from_cache=False,
+                language=language
+            )
+            
+            return {
+                'response': f"Es tut mir leid, bei der Bearbeitung Ihrer Anfrage ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.",
+                'sources': [],
+                'from_cache': False,
+                'processing_time': error_time
+            }
+        finally:
+            await coroutine_manager.cleanup()
+    
+    async def _handle_semantic_cache_result(self, optimized_query: Dict, query: str, language: str) -> Dict[str, Any]:
+        """
+        Handle semantic cache results with enhanced processing.
+        
+        Args:
+            optimized_query: Optimized query result from cache
+            query: Original query
+            language: Query language
+            
+        Returns:
+            Processed cache result
+        """
+        match_info = optimized_query['result'].get('semantic_match', {})
+        similarity = match_info.get('similarity', 0)
+        logger.info(f"Semantic cache hit with similarity: {similarity:.4f}")
+        
+        # Register metrics
+        self.metrics_manager.log_query_optimization(
+            processing_time=0.0,
+            was_cached=True,
+            cache_type="semantic"
+        )
+        
+        # Also register similarity score
+        self.metrics_manager.metrics['query_similarity_scores'].append(similarity)
+        
+        # Get stored sources
+        sources = optimized_query['result'].get('sources', [])
+        original_response = optimized_query['result'].get('response', '')
+        
+        # Enhanced processing for semantic cache results
+        if original_response and sources:
+            logger.info(f"Found valid semantic cache with response (length: {len(original_response)}) and {len(sources)} sources")
+            
+            try:
+                # Convert stored sources to documents for reranking
+                cached_documents = []
+                for source_metadata in sources:
+                    if isinstance(source_metadata, dict):
+                        chunk_content = source_metadata.get('chunk_content', source_metadata.get('source', ''))
+                        cached_doc = Document(
+                            page_content=chunk_content,
+                            metadata=source_metadata
+                        )
+                        cached_documents.append(cached_doc)
+                
+                if cached_documents:
+                    logger.info(f"Using {len(cached_documents)} cached chunks for reranking with new query")
+                    
+                    # Perform reranking with stored chunks and new query
+                    reranker_model = (
+                        settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
+                        else settings.ENGLISH_COHERE_RERANKING_MODEL
+                    )
+                    
+                    reranked_docs = await self.rerank_docs(query, cached_documents, reranker_model)
+                    
+                    # Check for relevant documents
+                    relevant_docs = [doc for doc in reranked_docs if doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE]
+                    
+                    if relevant_docs:
+                        logger.info(f"Found {len(relevant_docs)} relevant chunks after reranking (score >= {settings.MIN_RERANKING_SCORE})")
+                        
+                        # Generate new response using reranked cached chunks
+                        from app.utils.glossary import find_glossary_terms_with_explanation
+                        matching_terms = find_glossary_terms_with_explanation(query, language)
+                        
+                        # Prepare context and sources
+                        filtered_context = relevant_docs[:settings.MAX_CHUNKS_LLM]
+                        response_sources = []
+                        
+                        for document in filtered_context:
+                            source = {
+                                'source': document.metadata.get('source', 'Unknown'),
+                                'page_number': document.metadata.get('page_number', 'N/A'),
+                                'file_type': document.metadata.get('file_type', 'Unknown'),
+                                'sheet_name': document.metadata.get('sheet_name', ''),
+                                'reranking_score': document.metadata.get('reranking_score', 0)
+                            }
+                            if source not in response_sources:
+                                response_sources.append(source)
+                        
+                        # Generate new response
+                        if not matching_terms:
+                            prompt_template = ChatPromptTemplate.from_template(
+                                """
+                                You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                                Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                                Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                                Give always detailed answers in {language}.
+
+                                QUERY: ```{question}```
+
+                                CONTEXT: ```{context}```
+                                """
+                            )
+                        else:
+                            relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                                         for term, explanation in matching_terms])
+                            prompt_template = ChatPromptTemplate.from_template(
+                                """
+                                You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                                Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                                Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+
+                                The following terms from the query have specific meanings:
+                                {glossary}
+
+                                Please consider these specific meanings when responding. Give always detailed answers in {language}.
+
+                                QUERY: ```{question}```
+
+                                CONTEXT: ```{context}```
+                                """
+                            )
+                        
+                        # Create processing chain and generate response
+                        chain = prompt_template | self.llm_provider | StrOutputParser()
+                        
+                        if matching_terms:
+                            new_response = await chain.ainvoke({
+                                "context": filtered_context,
+                                "language": language,
+                                "question": query,
+                                "glossary": relevant_glossary
+                            })
+                        else:
+                            new_response = await chain.ainvoke({
+                                "context": filtered_context,
+                                "language": language,
+                                "question": query
+                            })
+                        
+                        # Store new response in cache
+                        enhanced_sources_for_cache = []
+                        for doc in filtered_context:
+                            enhanced_metadata = doc.metadata.copy()
+                            enhanced_metadata['chunk_content'] = doc.page_content
+                            enhanced_sources_for_cache.append(enhanced_metadata)
+                        
+                        self.query_optimizer._store_llm_response(query, new_response, language, enhanced_sources_for_cache)
+                        
+                        logger.info(f"Generated new response using {len(filtered_context)} reranked cached chunks from semantic match")
+                        return {
+                            'response': new_response,
+                            'sources': response_sources,
+                            'from_cache': False,
+                            'semantic_match': match_info,
+                            'processing_time': 0.0,
+                            'used_cached_chunks': True
+                        }
+                
+            except Exception as e:
+                logger.error(f"Error processing cached chunks for semantic match: {e}")
+        
+        # Fallback to original cached response
+        logger.info("Using original cached response from semantic match")
+        return optimized_query['result']
+    
     async def initialize_retrievers_parallel(
         self,
         collection_name: str,
