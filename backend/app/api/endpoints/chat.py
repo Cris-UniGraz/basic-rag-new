@@ -155,69 +155,67 @@ async def chat(
                 detail="RAG service initialization failed. Please try again later."
             )
         
-        # Initialize retrievers if needed
-        logger.debug("Initializing retrievers")
+        # Initialize retrievers in parallel for better performance
+        logger.debug("Initializing retrievers in parallel using optimized method")
         try:
-            # Determine root collection name and add language-specific suffixes
             root_collection_name = collection_name or settings.COLLECTION_NAME
-            german_collection = f"{root_collection_name}_de"
-            english_collection = f"{root_collection_name}_en"
-            
             logger.info(f"Using root collection: {root_collection_name}")
-            logger.info(f"Using collections - German: {german_collection}, English: {english_collection}")
             
-            retrievers = {}
+            # Use the new parallel initialization method
+            initialization_result = await rag_service.initialize_retrievers_parallel(
+                collection_name=root_collection_name,
+                top_k=settings.MAX_CHUNKS_CONSIDERED,
+                max_concurrency=settings.MAX_CONCURRENT_TASKS
+            )
             
-            # Try to get German retriever
-            try:
-                logger.debug("Getting German retriever")
-                # Check if collection exists before trying to create/load it
-                if utility.has_collection(german_collection):
-                    german_retriever = await rag_service.get_retriever(
-                        settings.get_sources_path("de"),
-                        embedding_manager.german_model,
-                        german_collection,
-                        top_k=settings.MAX_CHUNKS_CONSIDERED,
-                        language="german",
-                        max_concurrency=settings.MAX_CONCURRENT_TASKS
-                    )
-                    retrievers["german"] = german_retriever
-                else:
-                    logger.warning(f"German collection '{german_collection}' does not exist, skipping")
-            except Exception as e:
-                logger.error(f"Error initializing German retriever: {e}")
-                
-            # Try to get English retriever
-            try:
-                logger.debug("Getting English retriever")
-                # Check if collection exists before trying to create/load it
-                if utility.has_collection(english_collection):
-                    english_retriever = await rag_service.get_retriever(
-                        settings.get_sources_path("en"),
-                        embedding_manager.english_model,
-                        english_collection,
-                        top_k=settings.MAX_CHUNKS_CONSIDERED,
-                        language="english",
-                        max_concurrency=settings.MAX_CONCURRENT_TASKS
-                    )
-                    retrievers["english"] = english_retriever
-                else:
-                    logger.warning(f"English collection '{english_collection}' does not exist, skipping")
-            except Exception as e:
-                logger.error(f"Error initializing English retriever: {e}")
-                
+            retrievers = initialization_result["retrievers"]
+            metadata = initialization_result["metadata"]
+            
+            # Log initialization summary
+            logger.info(f"Parallel retriever initialization completed: "
+                       f"{metadata['successful_retrievers']} successful, "
+                       f"{metadata['failed_retrievers']} failed, "
+                       f"in {metadata['initialization_time']:.2f}s")
+            
             # Check if we have at least one retriever
             if not retrievers:
                 logger.error(f"No retrievers could be initialized for collection root '{root_collection_name}'")
+                
+                # Provide detailed error information from metadata
+                error_details = []
+                for task_detail in metadata.get("task_details", []):
+                    if not task_detail.get("exists", False):
+                        error_details.append(f"Collection '{task_detail.get('collection')}' does not exist")
+                    elif task_detail.get("initialization_error"):
+                        error_details.append(f"Failed to initialize {task_detail.get('language')} retriever: {task_detail.get('initialization_error')}")
+                
+                error_message = f"No valid collections found for '{root_collection_name}'. "
+                if error_details:
+                    error_message += "Details: " + "; ".join(error_details[:3])  # Limit to first 3 errors
+                error_message += " Please make sure you have uploaded documents to collections with suffixes '_de' or '_en'."
+                
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"No valid collections found for '{root_collection_name}'. Please make sure you have uploaded documents to collections with suffixes '_de' or '_en'."
+                    detail=error_message
                 )
                 
-            # Assign retrievers (use empty retrievers for missing languages)
+            # Extract retrievers for use in processing
             german_retriever = retrievers.get("german")
             english_retriever = retrievers.get("english")
-            logger.debug("Retrievers initialized successfully")
+            
+            logger.info(f"Successfully initialized retrievers - German: {german_retriever is not None}, English: {english_retriever is not None}")
+            
+            # Log additional performance metrics if available
+            if metadata.get("initialization_time", 0) > 0:
+                async_metadata_processor.log_async("INFO", 
+                    "Parallel retriever initialization performance summary",
+                    {
+                        "total_time": metadata["initialization_time"],
+                        "successful_retrievers": metadata["successful_retrievers"],
+                        "failed_retrievers": metadata["failed_retrievers"],
+                        "collection_root": root_collection_name,
+                        "languages_available": list(retrievers.keys())
+                    })
         except Exception as e:
             logger.error(f"Failed to initialize retrievers: {e}")
             ERROR_COUNTER.labels(error_type="RetrievalError", component="embeddings").inc()

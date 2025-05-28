@@ -18,6 +18,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import cohere
 from tenacity import retry, wait_exponential, stop_after_attempt
+from pymilvus import utility
 
 from app.core.config import settings
 from app.core.embedding_manager import embedding_manager
@@ -1879,6 +1880,193 @@ class RAGService:
             )
             
             return retrieved_docs
+    
+    async def initialize_retrievers_parallel(
+        self,
+        collection_name: str,
+        top_k: int = None,
+        max_concurrency: int = None
+    ) -> Dict[str, Any]:
+        """
+        Initialize retrievers for German and English collections in parallel.
+        
+        Args:
+            collection_name: Root collection name (language suffixes will be added)
+            top_k: Number of top documents to retrieve (defaults to settings)
+            max_concurrency: Maximum concurrent operations (defaults to settings)
+            
+        Returns:
+            Dictionary with initialized retrievers and metadata
+        """
+        await self.ensure_initialized()
+        
+        # Use defaults from settings if not provided
+        top_k = top_k or settings.MAX_CHUNKS_CONSIDERED
+        max_concurrency = max_concurrency or settings.MAX_CONCURRENT_TASKS
+        
+        # Determine collection names
+        german_collection = f"{collection_name}_de"
+        english_collection = f"{collection_name}_en"
+        
+        logger.info(f"Starting parallel retriever initialization for collections: {german_collection}, {english_collection}")
+        
+        # Prepare parallel tasks
+        tasks = []
+        task_info = []
+        
+        # Check German collection and add task if exists
+        try:
+            if utility.has_collection(german_collection):
+                german_task = self.get_retriever(
+                    settings.get_sources_path("de"),
+                    embedding_manager.german_model,
+                    german_collection,
+                    top_k=top_k,
+                    language="german",
+                    max_concurrency=max_concurrency
+                )
+                tasks.append(german_task)
+                task_info.append({
+                    "language": "german",
+                    "collection": german_collection,
+                    "exists": True
+                })
+                logger.debug(f"Added German retriever task for collection: {german_collection}")
+            else:
+                task_info.append({
+                    "language": "german", 
+                    "collection": german_collection,
+                    "exists": False
+                })
+                logger.warning(f"German collection '{german_collection}' does not exist")
+        except Exception as e:
+            logger.error(f"Error checking German collection '{german_collection}': {e}")
+            task_info.append({
+                "language": "german",
+                "collection": german_collection,
+                "exists": False,
+                "error": str(e)
+            })
+        
+        # Check English collection and add task if exists  
+        try:
+            if utility.has_collection(english_collection):
+                english_task = self.get_retriever(
+                    settings.get_sources_path("en"),
+                    embedding_manager.english_model,
+                    english_collection,
+                    top_k=top_k,
+                    language="english",
+                    max_concurrency=max_concurrency
+                )
+                tasks.append(english_task)
+                task_info.append({
+                    "language": "english",
+                    "collection": english_collection,
+                    "exists": True
+                })
+                logger.debug(f"Added English retriever task for collection: {english_collection}")
+            else:
+                task_info.append({
+                    "language": "english",
+                    "collection": english_collection, 
+                    "exists": False
+                })
+                logger.warning(f"English collection '{english_collection}' does not exist")
+        except Exception as e:
+            logger.error(f"Error checking English collection '{english_collection}': {e}")
+            task_info.append({
+                "language": "english",
+                "collection": english_collection,
+                "exists": False,
+                "error": str(e)
+            })
+        
+        # Execute tasks in parallel
+        retrievers = {}
+        initialization_metadata = {
+            "total_tasks": len(tasks),
+            "successful_retrievers": 0,
+            "failed_retrievers": 0,
+            "initialization_time": 0,
+            "task_details": task_info
+        }
+        
+        if tasks:
+            logger.info(f"Executing {len(tasks)} retriever initialization tasks in parallel")
+            start_time = time.time()
+            
+            try:
+                # Execute with exception handling
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                initialization_metadata["initialization_time"] = time.time() - start_time
+                logger.info(f"Parallel initialization completed in {initialization_metadata['initialization_time']:.2f}s")
+                
+                # Process results
+                task_index = 0
+                for info in task_info:
+                    if info["exists"]:
+                        result = results[task_index]
+                        language = info["language"]
+                        
+                        if isinstance(result, Exception):
+                            logger.error(f"Failed to initialize {language} retriever: {result}")
+                            initialization_metadata["failed_retrievers"] += 1
+                            info["initialization_error"] = str(result)
+                            
+                            # Log async for detailed tracking
+                            async_metadata_processor.log_async("ERROR",
+                                f"Parallel retriever initialization failed for {language}",
+                                {
+                                    "language": language,
+                                    "collection": info["collection"],
+                                    "error": str(result)
+                                }, priority=3)
+                        else:
+                            retrievers[language] = result
+                            initialization_metadata["successful_retrievers"] += 1
+                            info["initialized"] = True
+                            logger.info(f"Successfully initialized {language} retriever")
+                            
+                            # Log async for detailed tracking
+                            async_metadata_processor.log_async("INFO",
+                                f"Parallel retriever initialization successful for {language}",
+                                {
+                                    "language": language,
+                                    "collection": info["collection"],
+                                    "initialization_time": initialization_metadata["initialization_time"]
+                                })
+                        
+                        task_index += 1
+                    else:
+                        info["initialized"] = False
+                        
+            except Exception as e:
+                logger.error(f"Critical error during parallel retriever initialization: {e}")
+                initialization_metadata["critical_error"] = str(e)
+                raise RuntimeError(f"Failed to initialize retrievers in parallel: {str(e)}")
+        else:
+            logger.warning("No retriever tasks to execute - no valid collections found")
+        
+        # Log final metrics
+        async_metadata_processor.record_performance_async(
+            "parallel_retriever_initialization",
+            initialization_metadata["initialization_time"],
+            initialization_metadata["successful_retrievers"] > 0,
+            {
+                "successful_retrievers": initialization_metadata["successful_retrievers"],
+                "failed_retrievers": initialization_metadata["failed_retrievers"],
+                "total_tasks": initialization_metadata["total_tasks"],
+                "collection_root": collection_name,
+                "languages_initialized": list(retrievers.keys())
+            }
+        )
+        
+        return {
+            "retrievers": retrievers,
+            "metadata": initialization_metadata
+        }
 
 
 # Factory function to create RAG service
