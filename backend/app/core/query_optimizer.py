@@ -58,6 +58,11 @@ class QueryOptimizer:
             cls._instance.query_optimization_enabled = settings.QUERY_OPTIMIZATION_ENABLED
             cls._instance.semantic_caching_enabled = settings.SEMANTIC_CACHING_ENABLED
             cls._instance.apply_query_rewriting = settings.APPLY_QUERY_REWRITING
+            
+            # Limpiar respuestas de error existentes al inicializar
+            cls._instance.clean_error_responses_from_cache()
+            # Limpiar entradas con chunk_content inválido
+            cls._instance.clean_invalid_chunk_content_from_cache()
         return cls._instance
     
     def __init__(self):
@@ -94,6 +99,11 @@ class QueryOptimizer:
         if not response or not response.strip():
             self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque la respuesta está vacía")
             return
+        
+        # NUEVO: No cachear respuestas de error
+        if self._is_error_response(response):
+            self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque es una respuesta de error")
+            return
             
         query_hash = self._generate_query_hash(query)
         
@@ -110,7 +120,8 @@ class QueryOptimizer:
                         'page': source.get('page', 'N/A'),
                         'page_number': source.get('page_number', None),
                         'sheet_name': source.get('sheet_name', None),
-                        'reranking_score': source.get('reranking_score', 0)
+                        'reranking_score': source.get('reranking_score', 0),
+                        'chunk_content': source.get('chunk_content', '')  # FIXED: Store the actual chunk content
                     }
                     validated_sources.append(validated_source)
                     
@@ -150,20 +161,40 @@ class QueryOptimizer:
         """
         # Verificar si el caché avanzado está habilitado
         if not self.enabled:
+            self.logger.debug(f"Cache disabled - returning None for query: '{query}'")
             return None
             
         query_hash = self._generate_query_hash(query)
+        self.logger.debug(f"Looking for query hash: {query_hash} (query: '{query}', language: {language})")
+        self.logger.debug(f"Current cache has {len(self.llm_cache)} entries")
        
         if query_hash in self.llm_cache:
             cache_entry = self.llm_cache[query_hash]
+            self.logger.debug(f"Found cache entry in llm_cache with language: {cache_entry.get('language')}, timestamp: {cache_entry.get('timestamp')}")
 
             # Verificar que la entrada no haya expirado y que el idioma coincida
-            if (datetime.now() - cache_entry['timestamp'] < timedelta(hours=self.ttl_hours) and 
-                cache_entry['language'] == language):
-                self.logger.info(f"Cache hit for query: '{query}'")
+            time_check = datetime.now() - cache_entry['timestamp'] < timedelta(hours=self.ttl_hours)
+            language_check = cache_entry['language'] == language
+            
+            self.logger.debug(f"LLM Cache - Time check: {time_check}, Language check: {language_check}")
+            
+            if time_check and language_check:
+                response_length = len(cache_entry.get('response', ''))
+                self.logger.info(f"LLM Cache hit for query: '{query}' - Response length: {response_length}")
                 return cache_entry
+            else:
+                self.logger.debug(f"LLM Cache entry found but failed validation - time_valid: {time_check}, language_match: {language_check}")
+        else:
+            self.logger.debug(f"Query hash {query_hash} not found in llm_cache")
         
-        self.logger.debug(f"Cache miss for query: '{query}'")
+        # NUEVO: También buscar en query_history como fallback
+        legacy_result = self._get_cached_result(query, language)
+        if legacy_result and legacy_result.get('response'):
+            response_length = len(legacy_result.get('response', ''))
+            self.logger.info(f"Legacy cache hit for query: '{query}' - Response length: {response_length}")
+            return legacy_result
+        
+        self.logger.debug(f"Cache miss for query: '{query}' in both caches")
         return None
     
     def _validate_document(self, document: Document) -> Document:
@@ -400,8 +431,15 @@ class QueryOptimizer:
                 # También verificar en el caché LLM
                 llm_cached_result = self.get_llm_response(data['query'], language)
                 
-                # Solo considerar como coincidencia si tiene una respuesta cacheada válida
-                if cached_result or (llm_cached_result and llm_cached_result.get('response')):
+                # Solo considerar como coincidencia si tiene una respuesta cacheada válida (no de error)
+                response_to_check = None
+                if llm_cached_result and llm_cached_result.get('response'):
+                    response_to_check = llm_cached_result.get('response')
+                elif cached_result and cached_result.get('response'):
+                    response_to_check = cached_result.get('response')
+                
+                # Verificar que la respuesta no es un mensaje de error
+                if response_to_check and not self._is_error_response(response_to_check):
                     highest_similarity = similarity
                     best_match = {
                         'query': data['query'],
@@ -429,6 +467,28 @@ class QueryOptimizer:
         # Eliminar espacios múltiples
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
+    
+    def _is_error_response(self, response: str) -> bool:
+        """
+        Verifica si una respuesta es un mensaje de error.
+        
+        Args:
+            response: Respuesta a verificar
+            
+        Returns:
+            True si es un mensaje de error, False en caso contrario
+        """
+        if not response:
+            return False
+            
+        error_messages = [
+            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen",
+            "I'm sorry, I couldn't find relevant information",
+            "keine relevanten Informationen",
+            "no relevant information"
+        ]
+        
+        return any(error_msg in response for error_msg in error_messages)
     
     def _store_query_embedding(self, query: str, embedding: Union[np.ndarray, List], language: str):
         """
@@ -483,11 +543,11 @@ class QueryOptimizer:
         if not self.query_optimization_enabled:
             return {'result': {'original_query': query}, 'source': 'new'}
         
-        # Verificar caché por coincidencia exacta primero
-        cached_result = self._get_cached_result(query, language)
+        # Verificar caché por coincidencia exacta primero (usar llm_cache, no query_history)
+        cached_result = self.get_llm_response(query, language)
         if cached_result:
             self.metrics.metrics['cache_hits'] += 1
-            self.logger.info(f"Exact cache hit for query: '{query}'")
+            self.logger.info(f"Exact cache hit for query: '{query}' - Response length: {len(cached_result.get('response', ''))}")
             return {'result': cached_result, 'source': 'cache'}
             
         # Obtener o generar embedding
@@ -503,24 +563,24 @@ class QueryOptimizer:
         # Buscar consultas semánticamente similares
         similar_query = self._find_similar_query(query_embedding, language)
         if similar_query and self.semantic_caching_enabled:
-            # Verificar si hay una respuesta en caché para la consulta similar
-            similar_cached = self._get_cached_result(similar_query['query'], language)
+            # Verificar si hay una respuesta en caché LLM para la consulta similar (preferir llm_cache)
+            llm_cached = self.get_llm_response(similar_query['query'], language)
             
-            # Si no hay en historial, verificar en el caché LLM
-            llm_cached = None
-            if not similar_cached:
-                llm_cached = self.get_llm_response(similar_query['query'], language)
+            # Si no hay en llm_cache, verificar en el historial 
+            similar_cached = None
+            if not llm_cached or not llm_cached.get('response'):
+                similar_cached = self._get_cached_result(similar_query['query'], language)
                 
-            # Usar cualquiera de las dos cachés que tenga respuesta
-            if similar_cached or (llm_cached and llm_cached.get('response')):
+            # Usar cualquiera de las dos cachés que tenga respuesta válida
+            if (llm_cached and llm_cached.get('response')) or (similar_cached and similar_cached.get('response')):
                 self.metrics.metrics['cache_hits'] += 1
                 self.logger.info(f"Semantic cache hit with similarity {similar_query['similarity']:.4f}")
                 
                 # Registrar la similitud para métricas
                 self.metrics.metrics['query_similarity_scores'].append(similar_query['similarity'])
                 
-                # Usar la caché que tenga respuesta
-                cache_result = similar_cached if similar_cached else llm_cached
+                # Usar la caché que tenga respuesta válida
+                cache_result = llm_cached if (llm_cached and llm_cached.get('response')) else similar_cached
                 
                 # Añadir información de similitud al resultado
                 cache_result['semantic_match'] = {
@@ -529,7 +589,10 @@ class QueryOptimizer:
                     'similarity': similar_query['similarity']
                 }
                 
-                self.logger.info(f"Returning cached response for similar query with content length: {len(cache_result.get('response', ''))}")
+                response_length = len(cache_result.get('response', '')) if cache_result.get('response') else 0
+                self.logger.info(f"Returning cached response for similar query with content length: {response_length}")
+                if response_length == 0:
+                    self.logger.warning(f"Semantic cache result has empty response! Cache result keys: {list(cache_result.keys()) if cache_result else 'None'}")
                 
                 return {'result': cache_result, 'source': 'semantic_cache'}
         
@@ -666,5 +729,65 @@ class QueryOptimizer:
             
         if keys_to_remove:
             self.logger.info(f"Removed {len(keys_to_remove)} expired entries from cache")
+            
+        return len(keys_to_remove)
+    
+    def clean_error_responses_from_cache(self):
+        """
+        Limpia respuestas de error del caché existente.
+        """
+        keys_to_remove = []
+        
+        for query_hash, entry in self.llm_cache.items():
+            response = entry.get('response', '')
+            if self._is_error_response(response):
+                keys_to_remove.append(query_hash)
+        
+        for key in keys_to_remove:
+            del self.llm_cache[key]
+            self.logger.info(f"Eliminada respuesta de error del caché para hash: {key}")
+        
+        if keys_to_remove:
+            self.logger.info(f"Limpieza completada: eliminadas {len(keys_to_remove)} respuestas de error del caché")
+        else:
+            self.logger.info("No se encontraron respuestas de error en el caché")
+        
+        return len(keys_to_remove)
+        
+    def clean_invalid_chunk_content_from_cache(self):
+        """
+        Limpia entradas del caché que tienen chunk_content inválido (solo nombres de archivo).
+        """
+        if not self.enabled:
+            return 0
+            
+        keys_to_remove = []
+        
+        for key, value in self.llm_cache.items():
+            sources = value.get('sources', [])
+            has_invalid_chunks = False
+            
+            for source in sources:
+                chunk_content = source.get('chunk_content', '')
+                # Si el chunk_content es solo un nombre de archivo (sin contenido real)
+                if chunk_content and chunk_content.endswith(('.pdf', '.docx', '.doc', '.xlsx', '.txt')):
+                    # Verificar si es SOLO el nombre del archivo sin contenido adicional
+                    # Un chunk válido debería tener más de 50 caracteres y contener espacios
+                    if len(chunk_content) < 100 or chunk_content.count(' ') < 5:
+                        has_invalid_chunks = True
+                        break
+            
+            if has_invalid_chunks:
+                keys_to_remove.append(key)
+        
+        # Eliminar las claves identificadas
+        for key in keys_to_remove:
+            del self.llm_cache[key]
+            self.logger.info(f"Eliminada entrada con chunk_content inválido del caché para hash: {key}")
+            
+        if keys_to_remove:
+            self.logger.info(f"Limpieza completada: eliminadas {len(keys_to_remove)} entradas con chunk_content inválido")
+        else:
+            self.logger.info("No se encontraron entradas con chunk_content inválido en el caché")
             
         return len(keys_to_remove)

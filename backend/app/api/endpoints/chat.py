@@ -7,6 +7,7 @@ import json
 
 from app.core.config import settings
 from app.core.metrics import REQUESTS_TOTAL, REQUEST_DURATION, track_active_tasks, ERROR_COUNTER
+from app.core.async_metadata_processor import async_metadata_processor, MetadataType
 from app.schemas.document import ChatMessage, ChatResponse
 from app.services.rag_service import RAGService, create_rag_service
 from app.services.llm_service import llm_service
@@ -39,22 +40,26 @@ async def chat(
     """
     start_time = time.time()
     
-    # Log received request data
-    logger.debug(f"Chat request received - language: {language}, return_documents: {return_documents}, collection_name: {collection_name}")
+    # Log received request data asíncronamente
+    async_metadata_processor.log_async(
+        "DEBUG", 
+        f"Chat request received - language: {language}, return_documents: {return_documents}, collection_name: {collection_name}",
+        {"language": language, "return_documents": return_documents, "collection_name": collection_name}
+    )
     
     # Check if we need to parse the request body
     if messages is None and request:
         try:
-            logger.info("No messages provided directly, attempting to parse request body")
+            async_metadata_processor.log_async("INFO", "No messages provided directly, attempting to parse request body")
             
             # Get raw body content
             body_bytes = await request.body()
             body_str = body_bytes.decode('utf-8')
-            logger.info(f"Raw request body: {body_str}")
+            async_metadata_processor.log_async("INFO", "Raw request body received", {"body_length": len(body_str)})
             
             # Parse body as JSON
             body_data = json.loads(body_str)
-            logger.info(f"Parsed request body: {body_data}")
+            async_metadata_processor.log_async("INFO", "Request body parsed successfully", {"fields": list(body_data.keys())})
             
             # Check if we have a messages field in the body
             if "messages" in body_data and isinstance(body_data["messages"], list):
@@ -67,11 +72,11 @@ async def chat(
                             role=msg["role"],
                             content=msg["content"],
                         ))
-                logger.info(f"Successfully parsed {len(messages)} messages from request body")
+                async_metadata_processor.log_async("INFO", f"Successfully parsed {len(messages)} messages from request body", {"message_count": len(messages)})
             else:
-                logger.warning("No 'messages' field found in request body or it's not a list")
+                async_metadata_processor.log_async("WARNING", "No 'messages' field found in request body or it's not a list")
         except Exception as e:
-            logger.error(f"Error parsing request body: {e}", exc_info=True)
+            async_metadata_processor.log_async("ERROR", f"Error parsing request body: {e}", {"error": str(e)}, priority=3)
     
     try:
         # Log the messages received (safely handling potential large content)
@@ -91,39 +96,40 @@ async def chat(
         REQUESTS_TOTAL.labels(endpoint="/api/chat", status="processing").inc()
         
         # Validate language
-        logger.debug(f"Validating language: {language}")
+        async_metadata_processor.log_async("DEBUG", f"Validating language: {language}", {"language": language})
         if language.lower() not in ["german", "english"]:
-            logger.warning(f"Invalid language provided: {language}")
+            async_metadata_processor.log_async("WARNING", f"Invalid language provided: {language}", {"language": language}, priority=2)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail=f"Language must be 'german' or 'english', received: {language}"
             )
         
         # Log messages array length
-        logger.debug(f"Validating messages array, length: {len(messages) if messages else 0}")
+        async_metadata_processor.log_async("DEBUG", "Validating messages array", {"message_count": len(messages) if messages else 0})
         
         # Extract user query from the last message
         if not messages:
-            logger.warning("No messages provided in request")
+            async_metadata_processor.log_async("WARNING", "No messages provided in request", priority=2)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail="No messages provided"
             )
             
         # Check if the last message is from user
-        logger.debug(f"Checking last message role: {messages[-1].role if messages else 'no messages'}")
+        last_role = messages[-1].role if messages else 'no messages'
+        async_metadata_processor.log_async("DEBUG", "Checking last message role", {"role": last_role})
         if messages[-1].role != "user":
-            logger.warning(f"Last message role is not 'user': {messages[-1].role}")
+            async_metadata_processor.log_async("WARNING", f"Last message role is not 'user': {messages[-1].role}", {"role": messages[-1].role}, priority=2)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail="Last message must be from user"
             )
         
         user_query = messages[-1].content
-        logger.debug(f"User query extracted: {user_query[:100]}...")
+        async_metadata_processor.log_async("DEBUG", "User query extracted", {"query_length": len(user_query), "query_preview": user_query[:100] + "..." if len(user_query) > 100 else user_query})
         
         if not user_query or len(user_query.strip()) == 0:
-            logger.warning("Empty user query received")
+            async_metadata_processor.log_async("WARNING", "Empty user query received", priority=2)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail="Query cannot be empty"
@@ -135,7 +141,7 @@ async def chat(
             if i + 1 < len(messages) and messages[i].role == "user" and messages[i+1].role == "assistant":
                 chat_history.append((messages[i].content, messages[i+1].content))
         
-        logger.debug(f"Formatted chat history with {len(chat_history)} exchanges")
+        async_metadata_processor.log_async("DEBUG", "Formatted chat history", {"history_exchanges": len(chat_history)})
         
         # Ensure RAG service is initialized
         logger.debug("Ensuring RAG service is initialized")
@@ -259,8 +265,13 @@ async def chat(
         # Calculate processing time
         processing_time = time.time() - start_time
         
-        # Record request duration
-        REQUEST_DURATION.labels(endpoint="/api/chat").observe(processing_time)
+        # Record request duration asíncronamente
+        async_metadata_processor.record_metric_async(
+            "request_duration_seconds",
+            processing_time,
+            {"endpoint": "/api/chat"},
+            "histogram"
+        )
         
         # Extract relevant information
         response = result.get('response', '')
@@ -269,7 +280,7 @@ async def chat(
         documents = result.get('documents', [])
         
         if not response:
-            logger.warning("RAG service returned empty response")
+            async_metadata_processor.log_async("WARNING", "RAG service returned empty response", priority=2)
             response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden."
         
         # Format response
@@ -281,10 +292,28 @@ async def chat(
             documents=documents if return_documents else None
         )
         
-        logger.debug(f"Response generated successfully in {processing_time:.2f} seconds")
+        async_metadata_processor.log_async("DEBUG", "Response generated successfully", {"processing_time": processing_time, "sources_count": len(sources), "from_cache": from_cache})
         
-        # Update metrics
-        REQUESTS_TOTAL.labels(endpoint="/api/chat", status="success").inc()
+        # Update metrics asíncronamente
+        async_metadata_processor.record_metric_async(
+            "requests_total",
+            1,
+            {"endpoint": "/api/chat", "status": "success"},
+            "counter"
+        )
+        
+        # Registrar rendimiento asíncronamente
+        async_metadata_processor.record_performance_async(
+            "chat_request",
+            processing_time,
+            True,
+            {
+                "language": language,
+                "from_cache": from_cache,
+                "sources_count": len(sources),
+                "query_length": len(user_query)
+            }
+        )
         
         # Clean up resources in background
         if background_tasks:
@@ -293,20 +322,47 @@ async def chat(
         return chat_response
         
     except HTTPException as he:
-        # Log detailed information about HTTP exceptions
-        logger.error(f"HTTP Exception {he.status_code}: {he.detail}")
-        REQUESTS_TOTAL.labels(endpoint="/api/chat", status="error").inc()
+        # Log detailed information about HTTP exceptions asíncronamente
+        async_metadata_processor.log_async("ERROR", f"HTTP Exception {he.status_code}: {he.detail}", {
+            "status_code": he.status_code,
+            "detail": str(he.detail),
+            "endpoint": "/api/chat"
+        }, priority=3)
+        
+        async_metadata_processor.record_metric_async(
+            "requests_total",
+            1,
+            {"endpoint": "/api/chat", "status": "error"},
+            "counter"
+        )
         raise
     except Exception as e:
-        # Record error
-        logger.exception(f"Unexpected error in chat endpoint: {e}")
-        REQUESTS_TOTAL.labels(endpoint="/api/chat", status="error").inc()
-        ERROR_COUNTER.labels(error_type="UnhandledException", component="chat_endpoint").inc()
+        # Record error asíncronamente
+        async_metadata_processor.log_async("ERROR", f"Unexpected error in chat endpoint: {e}", {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "endpoint": "/api/chat"
+        }, priority=3)
+        
+        async_metadata_processor.record_metric_async(
+            "requests_total",
+            1,
+            {"endpoint": "/api/chat", "status": "error"},
+            "counter"
+        )
+        
+        async_metadata_processor.record_metric_async(
+            "errors_total",
+            1,
+            {"error_type": "UnhandledException", "component": "chat_endpoint"},
+            "counter"
+        )
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=f"Error inesperado: {str(e)}. Por favor contacta al administrador."
         )
     finally:
-        # Log request duration regardless of success/failure
+        # Log request duration regardless of success/failure asíncronamente
         duration = time.time() - start_time
-        logger.info(f"Chat request processed in {duration:.2f} seconds")
+        async_metadata_processor.log_async("INFO", "Chat request completed", {"duration": duration, "endpoint": "/api/chat"})

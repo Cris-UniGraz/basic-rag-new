@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+import json
 from typing import List, Dict, Any, Optional, Union, Tuple
 from loguru import logger
 from langchain_core.documents import Document
@@ -25,6 +26,7 @@ from app.core.metrics import measure_time, EMBEDDING_RETRIEVAL_DURATION
 from app.core.cache import cache_result
 from app.core.query_optimizer import QueryOptimizer
 from app.core.metrics_manager import MetricsManager
+from app.core.async_metadata_processor import async_metadata_processor, MetadataType
 from app.utils.loaders import load_documents
 from app.utils.glossary import find_glossary_terms, find_glossary_terms_with_explanation
 from app.utils.output_parsers import LineListOutputParser
@@ -1011,19 +1013,27 @@ class RAGService:
                 "language": language
             })
             
-            # Log retrieval metrics
-            self.metrics_manager.log_retrieval(
-                query=query,
-                num_docs=len(retrieved_docs),
-                duration=0.0,  # Duration is measured by coroutine_handler decorator
-                sources=[doc.metadata.get('source', 'unknown') for doc in retrieved_docs if hasattr(doc, 'metadata')],
-                language=language
+            # Log retrieval metrics asíncronamente
+            async_metadata_processor.record_performance_async(
+                "document_retrieval",
+                0.0,  # Duration is measured by coroutine_handler decorator
+                True,
+                {
+                    "query": query[:100],  # Solo los primeros 100 caracteres
+                    "num_docs": len(retrieved_docs),
+                    "sources": [doc.metadata.get('source', 'unknown') for doc in retrieved_docs if hasattr(doc, 'metadata')][:5],  # Máximo 5 fuentes
+                    "language": language
+                }
             )
             
             return retrieved_docs
             
         except Exception as e:
-            logger.error(f"Error in retrieve_context_without_reranking: {e}")
+            async_metadata_processor.log_async("ERROR", f"Error in retrieve_context_without_reranking: {e}", {
+                "error": str(e),
+                "query": query[:100],
+                "language": language
+            }, priority=3)
             return []
     
     async def process_queries_and_combine_results(
@@ -1059,7 +1069,7 @@ class RAGService:
             # Verificar caché primero usando el query optimizer
             cached_result = self.query_optimizer.get_llm_response(query, language)
             if cached_result:
-                logger.info(f"Cache hit for query: '{query}'")
+                logger.info(f"Cache hit for query: '{query}' - Response length: {len(cached_result.get('response', ''))}")
                 # Registrar métricas más detalladas
                 self.metrics_manager.log_rag_query(
                     query=query,
@@ -1110,8 +1120,13 @@ class RAGService:
                     language=language
                 )
                 
+                response_text = optimized_query['result']['response']
+                logger.info(f"Exact cache returning response with length: {len(response_text) if response_text else 0}")
+                if not response_text:
+                    logger.warning(f"Exact cache result has empty response! Result keys: {list(optimized_query['result'].keys())}")
+                
                 return {
-                    'response': optimized_query['result']['response'],
+                    'response': response_text,
                     'sources': sources,
                     'from_cache': True,
                     'processing_time': 0.0
@@ -1822,12 +1837,15 @@ class RAGService:
             logger.debug(f"Azure Cohere reranking took {processing_time:.2f} seconds. "
                        f"Reranked {len(documents)} documents, kept {len(reranked_documents)} above threshold.")
             
-            # Registrar llamada a API
-            self.metrics_manager.log_api_call(
-                api_type="azure_cohere",
-                success=True,
-                duration=processing_time,
-                rate_limited=False
+            # Registrar llamada a API asíncronamente
+            async_metadata_processor.record_api_call_async(
+                "azure_cohere",
+                "/v2/rerank",
+                "POST",
+                200,
+                processing_time,
+                len(json.dumps(payload).encode('utf-8')),
+                len(response.content) if hasattr(response, 'content') else 0
             )
             
             # Registrar puntuaciones si hay resultados
@@ -1843,12 +1861,14 @@ class RAGService:
         except Exception as e:
             logger.error(f"Exception during Azure Cohere reranking: {str(e)}")
             
-            # Registrar error en API
-            self.metrics_manager.log_api_call(
-                api_type="azure_cohere",
-                success=False,
-                duration=time.time() - start_time,
-                rate_limited="rate limit" in str(e).lower()
+            # Registrar error en API asíncronamente
+            error_duration = time.time() - start_time
+            async_metadata_processor.record_api_call_async(
+                "azure_cohere",
+                "/v2/rerank",
+                "POST",
+                500,
+                error_duration
             )
             
             # Registrar el error

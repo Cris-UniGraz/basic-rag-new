@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the internal flow of the Basic RAG (Retrieval Augmented Generation) system, which implements advanced techniques for document retrieval and response generation. The system supports multi-language queries (German and English) and includes sophisticated caching mechanisms for performance optimization.
+This document describes the internal flow of the Basic RAG (Retrieval Augmented Generation) system, which implements advanced techniques for document retrieval and response generation. The system supports multi-language queries (German and English) and includes sophisticated caching mechanisms with asynchronous metadata processing for performance optimization.
 
 ## System Architecture
 
@@ -13,6 +13,25 @@ The system is built as a containerized web application using FastAPI as the back
 - **Cache Layer**: Redis for query and response caching
 - **LLM Service**: Azure OpenAI GPT models
 - **Reranking**: Cohere reranking models via Azure
+- **Asynchronous Processing**: Background metadata and metrics processing for non-blocking operations
+
+## Asynchronous Metadata Processing Enhancement
+
+### Background Processing System
+The system implements an `AsyncMetadataProcessor` that handles logging and metrics collection asynchronously to avoid blocking the main request thread:
+
+#### Key Features
+- **Queue-based Processing**: Uses asyncio queues for non-blocking operations
+- **Priority Handling**: Critical events (errors) are processed with higher priority
+- **Batch Operations**: Groups similar operations for efficiency
+- **JSON Serialization**: Handles complex data types with automatic serialization
+- **Background Workers**: Dedicated coroutines process metadata without impacting response times
+
+#### Performance Benefits
+- **Reduced Latency**: Main request processing is not blocked by logging/metrics
+- **Better Throughput**: Higher concurrent request handling capacity
+- **Resource Optimization**: Background processing uses idle CPU cycles
+- **Improved User Experience**: Faster response times for user queries
 
 ## Main Query Processing Flow
 
@@ -21,41 +40,45 @@ The system is built as a containerized web application using FastAPI as the back
 - The query is sent to the FastAPI backend via `/api/chat` endpoint
 - System validates language parameter (German or English)
 - Chat history is formatted from conversation messages
+- **Async Enhancement**: Request logging happens in background
 
 ### 2. Cache Check Phase
-The system implements a sophisticated two-level caching mechanism:
+The system implements a sophisticated two-level caching mechanism with enhanced chunk content storage:
 
 #### 2.1 Exact Cache Match
 - System generates MD5 hash of the normalized query
 - Checks Redis for exact query match
 - If found and not expired (24 hours TTL), returns cached response immediately
+- **Fix Applied**: Cache cleanup automatically removes invalid entries
 
 #### 2.2 Semantic Cache Match (Enhanced Logic)
 - If no exact match, system generates query embedding using appropriate language model
 - Compares query embedding against stored query embeddings using cosine similarity
 - If similarity score >= `QUERY_SIMILARITY_THRESHOLD` (default: 0.85), considers it a semantic match
+- **Critical Fix**: Properly stores and retrieves full document content (`chunk_content`) instead of just filenames
 - **New Behavior**: Instead of returning cached response directly:
   - If valid cached response and chunks exist: Uses cached chunks for new response generation
   - If no valid cached data: Continues with normal RAG processing
 
-### 2.3 Semantic Cache Processing with Adaptive Chunk Reuse
-When a semantic match is found with valid cached data:
+### 2.3 Semantic Cache Processing with Fixed Chunk Content Storage
 
-#### 2.3.1 Cached Chunk Retrieval
+#### 2.3.1 Cached Chunk Retrieval (Fixed)
 - System retrieves stored document chunks from the semantically similar query
-- Chunks include full content (`chunk_content`) and metadata (source, scores, etc.)
-- **Initially skips document retrieval phase** - attempts to use cached chunks first
+- **FIXED**: Chunks now include actual full content (`chunk_content`) instead of just filenames
+- Chunks include complete metadata (source, scores, reranking scores, etc.)
+- **Cache Validation**: Automatic cleanup removes entries with invalid chunk content
 
 #### 2.3.2 Targeted Reranking with Validation
 - Performs reranking using cached chunks against the NEW query
 - Uses appropriate language-specific Cohere reranking model
 - **Critical Validation**: Checks if any chunk achieves `reranking_score >= MIN_RERANKING_SCORE` (default: 0.2)
+- **Fixed Issue**: Chunks now contain actual document text for meaningful reranking
 
 #### 2.3.3 Adaptive Processing Decision
 **If chunks are relevant after reranking (≥ MIN_RERANKING_SCORE):**
 - Continues with cached chunk strategy
 - Filters context to include only sufficiently relevant chunks
-- Generates fresh response using validated reranked chunks
+- Generates fresh response using validated reranked chunks with actual content
 - Stores new response in Redis following standard criteria
 
 **If no chunks are relevant after reranking:**
@@ -65,11 +88,11 @@ When a semantic match is found with valid cached data:
 - Performs standard reranking on fresh documents
 - Generates response with newly retrieved, relevant content
 
-#### 2.3.4 Quality Assurance and Performance Tracking
-- System logs which strategy was employed and why
-- Tracks cache effectiveness and fallback frequency
-- Maintains metrics on chunk relevance post-reranking
-- Ensures no compromise on response quality regardless of path taken
+#### 2.3.4 Quality Assurance and Cache Integrity
+- **Automatic Cache Cleanup**: System detects and removes entries with invalid chunk content
+- **Content Validation**: Ensures chunk_content contains actual document text, not just filenames
+- **Performance Tracking**: Monitors cache effectiveness and chunk content quality
+- **Error Prevention**: Prevents LLM from receiving inadequate context due to missing content
 
 ### 3. Query Generation and Enhancement
 If no cache hit (exact or semantic with valid data), the system generates multiple query variations:
@@ -117,6 +140,7 @@ The system uses an Ensemble Retriever that combines five different retrieval tec
 - All four queries (original DE/EN + step-back DE/EN) are processed in parallel
 - Each query runs through all available retrievers
 - Results are collected and deduplicated by content hash
+- **Async Enhancement**: Retrieval metrics logged asynchronously
 
 ### 5. Document Reranking Phase
 #### 5.1 Unified Reranking
@@ -124,6 +148,7 @@ The system uses an Ensemble Retriever that combines five different retrieval tec
 - Cohere reranking model scores each document against the original query
 - Documents below `MIN_RERANKING_SCORE` (default: 0.2) are filtered out
 - Documents are sorted by relevance score
+- **Async Enhancement**: Reranking performance metrics logged in background
 
 #### 5.2 Final Document Selection
 - Top `MAX_CHUNKS_LLM` (default: 6) documents are selected
@@ -144,89 +169,154 @@ The system uses an Ensemble Retriever that combines five different retrieval tec
 - System checks if valid response was generated
 - If no relevant information found, returns appropriate message
 - Validates minimum relevance threshold was met
+- **Error Prevention**: Filters out error responses from being cached
 
-### 7. Caching and Storage
-#### 7.1 Enhanced Response Caching
+### 7. Enhanced Caching and Storage
+
+#### 7.1 Fixed Response Caching with Content Integrity
 - **Conditional Storage**: Only responses with relevant documents (reranking score >= `MIN_RERANKING_SCORE`) are cached
-- **Enhanced Metadata**: Cached data includes:
+- **FIXED Content Storage**: Cached data now properly includes:
   - Complete response text
-  - Document chunks with full content (`chunk_content`)
+  - Document chunks with **full actual content** (`chunk_content`)
   - Source metadata and reranking scores
   - Query embedding for semantic matching
+- **Content Validation**: Automatic detection and removal of entries with invalid chunk content
 - **TTL Management**: 24-hour expiration with automatic cleanup
-- **Validation**: Empty responses or responses without sources are not cached
+- **Error Filtering**: Empty responses, error responses, or responses without sources are not cached
 
-#### 7.2 Intelligent Cache Strategy
+#### 7.2 Intelligent Cache Strategy with Integrity Checks
 - **Exact Match**: Direct response return for identical queries
-- **Semantic Match**: Chunk reuse with fresh response generation
+- **Semantic Match**: Chunk reuse with fresh response generation using actual content
 - **Cache Warming**: Proactive storage of high-quality responses
 - **Memory Efficiency**: LRU eviction and size limits
+- **Automatic Cleanup**: Removes entries with filename-only chunk content during initialization
 
-#### 7.3 Metrics Collection
-- Processing time, cache hit rates, and document scores are logged
-- **New Metrics**: Tracks cached chunk usage and semantic match effectiveness
-- Query patterns and retriever effectiveness are tracked
-- Error rates and API usage are monitored
-- Performance comparison between cached chunk reuse vs. full retrieval
+#### 7.3 Asynchronous Metrics Collection
+- **Non-blocking Logging**: Processing time, cache hit rates, and document scores logged asynchronously
+- **Background Processing**: Query patterns and retriever effectiveness tracked without blocking requests
+- **Performance Monitoring**: Cache effectiveness and chunk content quality monitored
+- **Error Tracking**: API usage and error rates monitored asynchronously
 
-## Cache System Details
+## Async Metadata Processing System Details
 
-### Redis Cache Structure
-The system uses multiple Redis data structures:
+### AsyncMetadataProcessor Architecture
+The system implements a sophisticated background processing system:
+
+#### Core Components
+1. **Event Queue**: Handles logging events with priority levels
+2. **Metrics Queue**: Processes performance and API metrics
+3. **Batch Processor**: Groups similar operations for efficiency
+4. **JSON Serializer**: Handles complex data types automatically
+5. **Background Workers**: Dedicated coroutines for non-blocking processing
+
+#### Event Types Processed
+- **Log Events**: Debug, info, warning, error messages with metadata
+- **Performance Metrics**: Query processing times, cache hits, retrieval metrics
+- **API Calls**: External service calls (Azure OpenAI, Cohere, etc.)
+- **Cache Operations**: Cache hits, misses, storage operations
+- **Error Events**: System errors with full context and stack traces
+
+#### Processing Flow
+```
+Main Request Thread                 Background Processor
+      ↓                                    ↓
+Generate Log/Metric Event    →    Queue Event (Non-blocking)
+      ↓                                    ↓
+Continue Processing          ←    Process in Background Worker
+      ↓                                    ↓
+Return Response to User      ←    Store/Log Asynchronously
+```
+
+## Cache System Details with Enhanced Integrity
+
+### Redis Cache Structure (Enhanced)
+The system uses multiple Redis data structures with content validation:
 
 1. **Query-Response Cache**: Stores complete responses keyed by query hash
 2. **Query Embeddings**: Stores embeddings for semantic similarity matching
-3. **Enhanced Document Metadata**: Stores source information, reranking scores, and full chunk content
+3. **Enhanced Document Metadata**: Stores source information, reranking scores, and **full chunk content**
 4. **Semantic Match Index**: Maintains mapping between similar queries for fast lookup
+5. **Content Validation**: Automatic detection of invalid chunk content
 
-### Cache Optimization Features
+### Cache Optimization Features (Enhanced)
 - **Dynamic Similarity Threshold**: Configurable threshold (default: 0.85) for semantic matching
 - **Intelligent TTL Management**: 24-hour expiration with automatic cleanup
 - **Smart Memory Management**: LRU eviction and size limits with quality-based retention
 - **Adaptive Cache Warming**: Proactive caching based on query patterns and success rates
-- **Chunk Content Preservation**: Full document content stored for efficient reuse
+- **Content Integrity**: Full document content stored and validated for efficient reuse
+- **Automatic Cleanup**: Removes entries with invalid chunk content on startup
+- **Error Response Filtering**: Prevents caching of error responses
 
 ## Performance Optimizations
 
 ### 1. Parallel Processing
 - Multiple queries processed simultaneously using asyncio
 - Concurrent retriever execution
-- Background cache cleanup
+- Background cache cleanup and metadata processing
 
-### 2. Advanced Intelligent Caching with Adaptive Processing
+### 2. Advanced Intelligent Caching with Content Integrity
 - **Multi-tier caching strategy**:
   - **Exact match**: Immediate response return
-  - **Semantic match with relevant chunks**: Skip retrieval, use reranked cached chunks
-  - **Semantic match with irrelevant chunks**: Automatic fallback to full processing
+  - **Semantic match with valid chunks**: Skip retrieval, use reranked cached chunks with actual content
+  - **Semantic match with invalid chunks**: Automatic cleanup and fallback to full processing
   - **No match**: Complete RAG pipeline execution
 - **Embedding caching**: Avoids recomputation of query embeddings
-- **Chunk content preservation**: Stores full document content for reuse
-- **Quality-based storage**: Only caches responses with relevant sources
+- **Verified chunk content preservation**: Stores and validates full document content for reuse
+- **Quality-based storage**: Only caches responses with relevant sources and valid content
 - **Adaptive reranking with validation**: Optimizes cached chunks and validates relevance
-- **Intelligent fallback mechanism**: Automatic recovery when cached chunks are insufficient
+- **Intelligent fallback mechanism**: Automatic recovery when cached chunks are insufficient or invalid
 
-### 3. Resource Management
-- Connection pooling for databases
-- Coroutine management for async operations
-- Memory-efficient document processing
+### 3. Asynchronous Resource Management
+- **Non-blocking Operations**: Logging and metrics don't block request processing
+- **Connection pooling**: Efficient database connection management
+- **Coroutine management**: Optimized async operations with background processing
+- **Memory-efficient processing**: Streamlined document processing with async metadata handling
 
-### 4. Quality Filtering
-- Reranking score thresholds
-- Document relevance validation
-- Response quality checks
+### 4. Quality Filtering with Content Validation
+- **Reranking score thresholds**: Ensures only relevant content is used
+- **Document relevance validation**: Multi-layer content quality checks
+- **Response quality checks**: Prevents caching of error responses
+- **Chunk content validation**: Ensures cached chunks contain actual document text
 
 ## Error Handling and Monitoring
 
 ### Error Recovery
 - Graceful degradation when retrievers fail
-- Fallback mechanisms for cache misses
+- Fallback mechanisms for cache misses and invalid content
 - Retry logic for API calls
+- Automatic cache cleanup for corrupted entries
 
-### Monitoring and Metrics
-- Comprehensive metrics collection via MetricsManager
-- Performance tracking across all components
-- Error rate monitoring and alerting
-- Cache efficiency analytics
+### Asynchronous Monitoring and Metrics
+- **Non-blocking Metrics**: Comprehensive metrics collection via AsyncMetadataProcessor
+- **Background Performance Tracking**: Processing times and cache effectiveness tracked asynchronously
+- **Error Rate Monitoring**: Real-time error tracking without blocking requests
+- **Cache Quality Analytics**: Content integrity and effectiveness monitoring
+
+## Recent Critical Fixes Applied
+
+### 1. Chunk Content Storage Fix
+**Problem**: Semantic cache was storing only filenames instead of actual document content in `chunk_content` field.
+
+**Solution**:
+- Modified `_store_llm_response()` in `query_optimizer.py` to properly store full document content
+- Added `clean_invalid_chunk_content_from_cache()` method to detect and remove corrupted entries
+- Implemented automatic cleanup during system initialization
+
+### 2. Cache Integrity Enhancement
+**Problem**: Cached entries with invalid chunk content caused LLM to receive inadequate context.
+
+**Solution**:
+- Added content validation logic to detect filename-only entries
+- Implemented automatic cleanup of corrupted cache entries
+- Enhanced cache storage validation to prevent future corruption
+
+### 3. Error Response Prevention
+**Problem**: Error responses were being cached, preventing similar queries from working correctly.
+
+**Solution**:
+- Added `_is_error_response()` method to detect error messages
+- Modified caching logic to exclude error responses
+- Implemented cleanup of existing error responses
 
 ## Configuration Parameters
 
@@ -239,6 +329,8 @@ Key system parameters that control behavior:
 - `ADVANCED_CACHE_TTL_HOURS`: Cache entry time-to-live (default: 24 hours)
 - `ADVANCED_CACHE_ENABLED`: Enable/disable advanced caching features (default: True)
 - `SEMANTIC_CACHING_ENABLED`: Enable/disable semantic similarity matching (default: True)
+- `ASYNC_METADATA_QUEUE_SIZE`: Size of async processing queues (default: 1000)
+- `ASYNC_METADATA_BATCH_SIZE`: Batch size for async operations (default: 10)
 
 ## Security and Data Privacy
 
@@ -246,46 +338,56 @@ Key system parameters that control behavior:
 - Secure API key management for external services
 - Input validation and sanitization
 - Rate limiting and abuse prevention
+- Asynchronous logging with sensitive data filtering
 
 ## Summary of Enhanced Performance Features
 
-The updated system introduces significant performance improvements while maintaining response quality:
+The updated system introduces significant performance improvements while maintaining response quality and data integrity:
 
 ### Key Enhancements
 
-1. **Smart Cache Storage**: Only high-quality responses with relevant sources are cached
-2. **Adaptive Semantic Processing**: Similar queries trigger intelligent chunk evaluation
-3. **Conditional Retrieval Bypass**: Document retrieval is skipped only when cached chunks prove relevant
-4. **Validated Reranking**: Cached chunks are reranked and validated for relevance before use
-5. **Intelligent Fallback**: Automatic recovery to full processing when cached chunks are insufficient
-6. **Quality Assurance**: Multiple validation layers ensure optimal response quality
-7. **Performance Optimization**: Maximizes efficiency while maintaining quality standards
+1. **Asynchronous Metadata Processing**: Background logging and metrics collection for non-blocking operations
+2. **Fixed Cache Content Storage**: Proper storage and retrieval of full document content
+3. **Smart Cache Storage**: Only high-quality responses with relevant sources are cached
+4. **Content Integrity Validation**: Automatic detection and cleanup of corrupted cache entries
+5. **Adaptive Semantic Processing**: Similar queries trigger intelligent chunk evaluation with validated content
+6. **Conditional Retrieval Bypass**: Document retrieval is skipped only when cached chunks prove relevant and valid
+7. **Validated Reranking**: Cached chunks are reranked and validated for relevance before use
+8. **Intelligent Fallback**: Automatic recovery to full processing when cached chunks are insufficient or invalid
+9. **Quality Assurance**: Multiple validation layers ensure optimal response quality and content integrity
+10. **Performance Optimization**: Maximizes efficiency while maintaining quality standards
 
 ### Performance Benefits
 
-- **Adaptive Efficiency**: Reduces API calls and processing time when cached chunks are relevant
+- **Non-blocking Operations**: Request processing not delayed by logging/metrics
+- **Improved Throughput**: Higher concurrent request handling capacity
+- **Content Reliability**: Ensures cached chunks contain actual document text
+- **Adaptive Efficiency**: Reduces API calls and processing time when cached chunks are relevant and valid
 - **Quality-First Approach**: Prioritizes response quality over speed, falling back when necessary
-- **Intelligent Resource Usage**: Optimizes computational resources based on chunk relevance validation
+- **Intelligent Resource Usage**: Optimizes computational resources based on chunk relevance and content validation
 - **Maintained Standards**: Ensures consistently high response quality through validation gates
 - **Scalable Architecture**: System adapts to query patterns and scales efficiently
 - **Robust Performance**: Fallback mechanisms ensure reliable performance under all conditions
 
 ### Operational Excellence
 
-- **Multi-Layer Validation**: Relevance validation at multiple stages ensures quality
-- **Intelligent Error Recovery**: Automatic fallback when cached chunks prove insufficient
-- **Comprehensive Monitoring**: Detailed metrics track cache effectiveness, fallback rates, and chunk relevance
+- **Content Integrity Assurance**: Multi-layer validation ensures chunk content quality
+- **Intelligent Error Recovery**: Automatic fallback when cached chunks prove insufficient or invalid
+- **Comprehensive Monitoring**: Detailed metrics track cache effectiveness, content quality, and fallback rates
 - **Adaptive Decision Making**: System automatically chooses optimal processing strategy
 - **Configurable Thresholds**: Tunable parameters for similarity and relevance scoring
-- **Memory Efficiency**: Smart cache management with quality-based retention
+- **Memory Efficiency**: Smart cache management with quality-based retention and integrity checks
 - **Performance Transparency**: Clear logging indicates processing path and decision rationale
+- **Automatic Maintenance**: Self-healing cache with corruption detection and cleanup
 
-## Processing Flow Decision Tree
+## Processing Flow Decision Tree (Updated)
 
-The system follows this decision logic for query processing:
+The system follows this enhanced decision logic for query processing:
 
 ```
 Query Received
+    ↓
+Async Log Request (Non-blocking)
     ↓
 Exact Cache Match?
     ├─ YES → Return Cached Response
@@ -297,14 +399,19 @@ Semantic Match Found (≥ 0.85 similarity)?
     ↓
     YES → Retrieve Cached Chunks
     ↓
-Rerank Cached Chunks vs New Query
+Validate Chunk Content Integrity
+    ├─ INVALID → Clean Cache + Execute Full RAG Pipeline
+    ↓
+    VALID → Rerank Cached Chunks vs New Query
     ↓
 Any Chunk Score ≥ MIN_RERANKING_SCORE?
     ├─ NO → Execute Full RAG Pipeline (Fallback)
     ↓
     YES → Generate Response with Relevant Chunks
     ↓
-Store New Response in Cache
+Store New Response in Cache (with content validation)
+    ↓
+Async Log Response Metrics (Non-blocking)
 ```
 
-This comprehensive flow ensures high-quality, contextually relevant responses while achieving superior performance through intelligent caching, adaptive chunk reuse, and quality-validated processing strategies. The system maintains optimal balance between efficiency and quality by making intelligent decisions at each stage based on actual content relevance rather than assumptions.
+This comprehensive flow ensures high-quality, contextually relevant responses while achieving superior performance through intelligent caching, adaptive chunk reuse with content integrity validation, asynchronous processing, and quality-validated processing strategies. The system maintains optimal balance between efficiency and quality by making intelligent decisions at each stage based on actual content relevance and integrity rather than assumptions.

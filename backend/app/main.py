@@ -18,6 +18,7 @@ import time
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.async_metadata_processor import async_metadata_processor
 from app.api import api_router
 from app.core.metrics import REQUEST_DURATION, REQUESTS_TOTAL
 
@@ -38,6 +39,10 @@ debugpy.listen(("0.0.0.0", 5678))
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting up application")
+    
+    # Initialize async metadata processor
+    await async_metadata_processor.start()
+    logger.info("Async metadata processor started")
     
     # Initialize services
     from app.core.embedding_manager import embedding_manager
@@ -72,6 +77,10 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down application")
+    
+    # Stop async metadata processor
+    await async_metadata_processor.stop()
+    logger.info("Async metadata processor stopped")
     
     # Clean up
     vector_store_manager.disconnect()
@@ -109,10 +118,17 @@ async def add_metrics(request: Request, call_next):
     if request.url.path == "/metrics":
         return await call_next(request)
     
-    # Log incoming request details
-    logger.info(f"INCOMING REQUEST: {request.method} {request.url.path} - Client: {request.client}")
+    # Log incoming request details asíncronamente
+    async_metadata_processor.log_async("INFO", f"INCOMING REQUEST: {request.method} {request.url.path}", {
+        "method": request.method,
+        "path": request.url.path,
+        "client": str(request.client)
+    })
     if "/documents/collections" in request.url.path:
-        logger.info(f"COLLECTIONS REQUEST HEADERS: {request.headers}")
+        async_metadata_processor.log_async("INFO", "Collections request received", {
+            "headers": dict(request.headers),
+            "path": request.url.path
+        })
     
     # Start timer
     start_time = time.time()
@@ -128,18 +144,31 @@ async def add_metrics(request: Request, call_next):
         response = await call_next(request)
         status = response.status_code
         
-        # Log response details for specific endpoints
+        # Log response details for specific endpoints asíncronamente
         if "/documents/collections" in request.url.path:
-            logger.info(f"COLLECTIONS RESPONSE: Status {status}")
+            async_metadata_processor.log_async("INFO", "Collections response generated", {
+                "status": status,
+                "path": request.url.path
+            })
             # Try to get the response body if it's a collections request
             if hasattr(response, "body"):
                 try:
-                    logger.info(f"COLLECTIONS RESPONSE BODY: {response.body.decode('utf-8')}")
+                    body_content = response.body.decode('utf-8')
+                    async_metadata_processor.log_async("INFO", "Collections response body", {
+                        "body_length": len(body_content),
+                        "body_preview": body_content[:200] + "..." if len(body_content) > 200 else body_content
+                    })
                 except Exception as body_err:
-                    logger.warning(f"Could not log response body: {body_err}")
+                    async_metadata_processor.log_async("WARNING", f"Could not log response body: {body_err}", {
+                        "error": str(body_err)
+                    })
         
     except Exception as e:
-        logger.error(f"Error handling request: {e}")
+        async_metadata_processor.log_async("ERROR", f"Error handling request: {e}", {
+            "error": str(e),
+            "path": request.url.path,
+            "method": request.method
+        }, priority=3)
         status = 500
         response = JSONResponse(
             status_code=status,
@@ -158,8 +187,13 @@ async def add_metrics(request: Request, call_next):
         status=str(status)
     ).inc()
     
-    # Log completion details
-    logger.info(f"COMPLETED: {request.method} {request.url.path} - Status: {status} - Duration: {duration:.3f}s")
+    # Log completion details asíncronamente
+    async_metadata_processor.log_async("INFO", "Request completed", {
+        "method": request.method,
+        "path": request.url.path,
+        "status": status,
+        "duration": duration
+    })
     
     return response
 
