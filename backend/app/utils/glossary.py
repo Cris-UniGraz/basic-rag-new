@@ -1,14 +1,11 @@
 from typing import Dict, List, Tuple, Optional
 
-def get_glossary(language: str) -> Dict[str, str]:
+def get_glossary() -> Dict[str, str]:
     """
-    Returns a dictionary with a glossary of terms and their explanations in the specified language.
+    Returns a unified dictionary with a glossary of terms and their explanations.
     
-    Args:
-        language: The language for which to get the glossary. Can be "german" or "english".
-        
     Returns:
-        Dictionary containing the glossary.
+        Dictionary containing the unified glossary.
     """
     german_glossary = {
         "PSP-Code": "Eine eindeutige Kennung für eine Personalplanungsmaßnahme. Es handelt sich dabei um einen 8-stelligen Code (beginnend mit P - z.B. P0035123), welcher beispielsweise für den Personalaufnahmeprozess benötigt wird. Sie erhalten den PSP-Code beim Dekanat bzw. bei der planungsverantwortlichen Person Ihrer Einheit.",
@@ -78,25 +75,27 @@ def get_glossary(language: str) -> Dict[str, str]:
         "AUVA" : "Allgemeine Unfallversicherungsanstalt"
     }
     
-    if language.lower() == "german":
-        return german_glossary
-    elif language.lower() == "english":
-        return english_glossary
-    else:
-        raise ValueError("Invalid language. Please use 'german' or 'english'.")
+    # Combine both glossaries with multiingual definitions
+    unified_glossary = german_glossary.copy()
+    
+    # Add English definitions where available, combining with German ones
+    for key in german_glossary.keys():
+        if key in english_glossary:
+            unified_glossary[key] = f"{german_glossary[key]} | EN: {english_glossary[key]}"
+    
+    return unified_glossary
 
-def find_glossary_terms_with_explanation(query: str, language: str) -> List[Tuple[str, str]]:
+def find_glossary_terms_with_explanation(query: str) -> List[Tuple[str, str]]:
     """
     Find glossary terms that appear in the query and return them with their explanations.
     
     Args:
         query: The user query string
-        language: The language of the query ("german" or "english")
     
     Returns:
         List of tuples containing matched terms and their explanations
     """
-    glossary = get_glossary(language)
+    glossary = get_glossary()
 
     # Convert query to lowercase for case-insensitive matching
     query_lower = query.lower()
@@ -110,18 +109,17 @@ def find_glossary_terms_with_explanation(query: str, language: str) -> List[Tupl
     
     return matches
 
-def find_glossary_terms(query: str, language: str) -> List[str]:
+def find_glossary_terms(query: str) -> List[str]:
     """
     Find glossary terms that appear in the query and return just the terms.
     
     Args:
         query: The user query string
-        language: The language of the query ("german" or "english")
     
     Returns:
         List of matched terms
     """
-    glossary = get_glossary(language)
+    glossary = get_glossary()
 
     # Convert query to lowercase for case-insensitive matching
     query_lower = query.lower()

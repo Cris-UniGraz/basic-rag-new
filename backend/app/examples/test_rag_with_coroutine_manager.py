@@ -3,7 +3,7 @@ Real-world test for RAG integration with the enhanced CoroutineManager.
 
 This script demonstrates how the enhanced CoroutineManager improves the performance
 and reliability of the RAG system in a realistic scenario with:
-- Multiple parallel retrievals across languages
+- Multiple parallel retrievals with unified processing
 - Query optimization and translation
 - Chunked execution for efficient resource usage
 - Advanced timeout and error handling
@@ -153,11 +153,9 @@ async def test_parallel_retrieval():
         logger.info(f"Processing query: '{query}'")
         
         start_time = time.time()
-        result = await rag_service.process_queries_with_async_pipeline(
+        result = await rag_service.process_query(
             query=query,
-            retriever_de=retriever_de,
-            retriever_en=retriever_en,
-            language="german"
+            retriever=retriever_de
         )
         
         duration = time.time() - start_time
@@ -267,11 +265,9 @@ async def test_heavy_load_retrieval():
                 logger.info(f"User {user_id} querying: '{query}'")
                 
                 start_time = time.time()
-                result = await rag_service.process_queries_with_async_pipeline(
+                result = await rag_service.process_query(
                     query=query,
-                    retriever_de=session["retriever_de"],
-                    retriever_en=session["retriever_en"],
-                    language="german"
+                    retriever=session["retriever_de"]
                 )
                 
                 duration = time.time() - start_time
@@ -424,11 +420,9 @@ async def test_error_recovery():
             
             # Process query with the specified retrievers
             start_time = time.time()
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 query=case['query'],
-                retriever_de=case['retriever_de'],
-                retriever_en=case['retriever_en'],
-                language="german"
+                retriever=case['retriever_de']
             )
             
             duration = time.time() - start_time

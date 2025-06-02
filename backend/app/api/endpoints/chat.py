@@ -25,7 +25,6 @@ rag_service = create_rag_service(llm_service)
 @track_active_tasks("chat_request")
 async def chat(
     messages: List[ChatMessage] = None,
-    language: str = Query("german", description="Response language (german or english)"),
     return_documents: bool = Query(False, description="Whether to return retrieved documents"),
     collection_name: str = Query(None, description="Collection name to use for retrieval"),
     background_tasks: BackgroundTasks = None,
@@ -35,16 +34,16 @@ async def chat(
     Chat with the RAG system.
     
     - **messages**: List of chat messages
-    - **language**: Response language (german or english)
     - **return_documents**: Whether to return retrieved documents
+    - **collection_name**: Collection name to use for retrieval
     """
     start_time = time.time()
     
     # Log received request data asíncronamente
     async_metadata_processor.log_async(
         "DEBUG", 
-        f"Chat request received - language: {language}, return_documents: {return_documents}, collection_name: {collection_name}",
-        {"language": language, "return_documents": return_documents, "collection_name": collection_name}
+        f"Chat request received - return_documents: {return_documents}, collection_name: {collection_name}",
+        {"return_documents": return_documents, "collection_name": collection_name}
     )
     
     # Check if we need to parse the request body
@@ -95,14 +94,8 @@ async def chat(
         # Increment request counter
         REQUESTS_TOTAL.labels(endpoint="/api/chat", status="processing").inc()
         
-        # Validate language
-        async_metadata_processor.log_async("DEBUG", f"Validating language: {language}", {"language": language})
-        if language.lower() not in ["german", "english"]:
-            async_metadata_processor.log_async("WARNING", f"Invalid language provided: {language}", {"language": language}, priority=2)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, 
-                detail=f"Language must be 'german' or 'english', received: {language}"
-            )
+        # Log validation start
+        async_metadata_processor.log_async("DEBUG", "Starting request validation", {})
         
         # Log messages array length
         async_metadata_processor.log_async("DEBUG", "Validating messages array", {"message_count": len(messages) if messages else 0})
@@ -158,64 +151,19 @@ async def chat(
         # Initialize retrievers in parallel for better performance
         logger.debug("Initializing retrievers in parallel using optimized method")
         try:
-            root_collection_name = collection_name or settings.COLLECTION_NAME
-            logger.info(f"Using root collection: {root_collection_name}")
+            collection_name_to_use = collection_name or settings.COLLECTION_NAME
+            logger.info(f"Using collection: {collection_name_to_use}")
             
-            # Use the new parallel initialization method
-            initialization_result = await rag_service.initialize_retrievers_parallel(
-                collection_name=root_collection_name,
-                top_k=settings.MAX_CHUNKS_CONSIDERED,
-                max_concurrency=settings.MAX_CONCURRENT_TASKS
-            )
+            # Get unified retriever for the collection
+            retriever = await rag_service.get_retriever(collection_name_to_use, settings.MAX_CHUNKS_CONSIDERED)
             
-            retrievers = initialization_result["retrievers"]
-            metadata = initialization_result["metadata"]
-            
-            # Log initialization summary
-            logger.info(f"Parallel retriever initialization completed: "
-                       f"{metadata['successful_retrievers']} successful, "
-                       f"{metadata['failed_retrievers']} failed, "
-                       f"in {metadata['initialization_time']:.2f}s")
-            
-            # Check if we have at least one retriever
-            if not retrievers:
-                logger.error(f"No retrievers could be initialized for collection root '{root_collection_name}'")
-                
-                # Provide detailed error information from metadata
-                error_details = []
-                for task_detail in metadata.get("task_details", []):
-                    if not task_detail.get("exists", False):
-                        error_details.append(f"Collection '{task_detail.get('collection')}' does not exist")
-                    elif task_detail.get("initialization_error"):
-                        error_details.append(f"Failed to initialize {task_detail.get('language')} retriever: {task_detail.get('initialization_error')}")
-                
-                error_message = f"No valid collections found for '{root_collection_name}'. "
-                if error_details:
-                    error_message += "Details: " + "; ".join(error_details[:3])  # Limit to first 3 errors
-                error_message += " Please make sure you have uploaded documents to collections with suffixes '_de' or '_en'."
-                
+            if not retriever:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=error_message
+                    detail=f"Collection '{collection_name_to_use}' not found. Please upload documents first."
                 )
-                
-            # Extract retrievers for use in processing
-            german_retriever = retrievers.get("german")
-            english_retriever = retrievers.get("english")
             
-            logger.info(f"Successfully initialized retrievers - German: {german_retriever is not None}, English: {english_retriever is not None}")
-            
-            # Log additional performance metrics if available
-            if metadata.get("initialization_time", 0) > 0:
-                async_metadata_processor.log_async("INFO", 
-                    "Parallel retriever initialization performance summary",
-                    {
-                        "total_time": metadata["initialization_time"],
-                        "successful_retrievers": metadata["successful_retrievers"],
-                        "failed_retrievers": metadata["failed_retrievers"],
-                        "collection_root": root_collection_name,
-                        "languages_available": list(retrievers.keys())
-                    })
+            logger.info(f"Successfully initialized retriever for collection: {collection_name_to_use}")
         except Exception as e:
             logger.error(f"Failed to initialize retrievers: {e}")
             ERROR_COUNTER.labels(error_type="RetrievalError", component="embeddings").inc()
@@ -224,30 +172,17 @@ async def chat(
                 detail="Failed to initialize retrieval models. Please try again later."
             )
         
-        # Process query with advanced pipeline selection
+        # Process query with RAG service
         logger.debug("Processing query with RAG service")
         try:
-            # Handle the case where one or both retrievers might be None
-            if german_retriever is None and english_retriever is None:
-                logger.error("Both retrievers are None, cannot process query")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="No valid retrievers available. Please upload documents first."
-                )
-                
-            # Process query with available retrievers using advanced async pipeline
-            logger.info(f"Processing query with available retrievers - German: {german_retriever is not None}, English: {english_retriever is not None}")
-            
-            # Process query with advanced async pipeline
-            logger.info("Using advanced async pipeline for query processing")
+            # Process query with unified retriever
+            logger.info("Processing query with unified retriever")
             try:
                 result = await asyncio.wait_for(
-                    rag_service.process_queries_with_async_pipeline(
+                    rag_service.process_query(
                         user_query,
-                        german_retriever,
-                        english_retriever,
-                        chat_history,
-                        language
+                        retriever,
+                        chat_history
                     ),
                     timeout=settings.CHAT_REQUEST_TIMEOUT
                 )
@@ -339,7 +274,6 @@ async def chat(
             processing_time,
             True,
             {
-                "language": language,
                 "from_cache": from_cache,
                 "sources_count": len(sources),
                 "query_length": len(user_query)

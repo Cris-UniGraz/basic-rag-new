@@ -29,8 +29,6 @@ class Settings(BaseSettings):
 
     # Embedding Models Configuration
     EMBEDDING_MODEL_NAME: str
-    GERMAN_EMBEDDING_MODEL_NAME: str
-    ENGLISH_EMBEDDING_MODEL_NAME: str
 
     # Chunking Parameters
     CHUNK_SIZE: int = Field(default=512)
@@ -41,8 +39,7 @@ class Settings(BaseSettings):
 
     # Reranking Configuration
     RERANKING_TYPE: str = Field(default="cohere")
-    GERMAN_COHERE_RERANKING_MODEL: str
-    ENGLISH_COHERE_RERANKING_MODEL: str
+    COHERE_RERANKING_MODEL: str
     MIN_RERANKING_SCORE: float = Field(default=0.2)
     
     # Retriever Weights Configuration
@@ -87,7 +84,6 @@ class Settings(BaseSettings):
 
     # System Parameters
     USER_AGENT: str = Field(default="rag_assistant")
-    DEFAULT_LANGUAGE: str = Field(default="german")
 
     # Resource Management
     MAX_CONCURRENT_TASKS: int = Field(default=5)  # Increased from 3 to 5
@@ -118,12 +114,9 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = True
 
-    def get_sources_path(self, language: Optional[str] = None):
-        """Get the path to source documents, with optional language folder."""
-        base_path = Path(self.SOURCES_PATH)
-        if language:
-            return str(base_path / language.lower())
-        return str(base_path)
+    def get_sources_path(self):
+        """Get the path to source documents."""
+        return str(Path(self.SOURCES_PATH))
 
 
 settings = Settings()

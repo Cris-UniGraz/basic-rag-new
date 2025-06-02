@@ -144,8 +144,7 @@ h1, h2, h3 {
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "language" not in st.session_state:
-    st.session_state.language = "german"
+# Language state removed - using unified processing
 if "sources" not in st.session_state:
     st.session_state.sources = []
 if "processing_time" not in st.session_state:
@@ -299,11 +298,10 @@ def send_message(message: str) -> Dict[str, Any]:
             # Add debug logging
             print(f"Sending request to {get_api_url('/chat/chat')}")
             print(f"Request payload: {messages}")
-            print(f"Language: {st.session_state.language}, return_documents: {False}")
+            print(f"return_documents: {False}")
             
-            # Create query parameters for language and return_documents
+            # Create query parameters for return_documents
             params = {
-                "language": st.session_state.language,
                 "return_documents": str(False).lower()
             }
             
@@ -317,7 +315,7 @@ def send_message(message: str) -> Dict[str, Any]:
             response = client.post(
                 get_api_url("/chat/chat"),
                 json=messages,  # Send messages directly as the JSON body
-                params=params,  # Send language and return_documents as query parameters
+                params=params,  # Send return_documents as query parameters
                 timeout=120.0  # Longer timeout for RAG
             )
             
@@ -337,13 +335,12 @@ def send_message(message: str) -> Dict[str, Any]:
         }
 
 
-def upload_documents(files, language: str, collection_name: Optional[str] = None) -> Dict[str, Any]:
+def upload_documents(files, collection_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Upload documents to the API.
     
     Args:
         files: Files to upload
-        language: Document language
         collection_name: Optional collection name
         
     Returns:
@@ -351,9 +348,7 @@ def upload_documents(files, language: str, collection_name: Optional[str] = None
     """
     try:
         # Prepare form data
-        form_data = {
-            "language": language
-        }
+        form_data = {}
         if collection_name:
             form_data["collection_name"] = collection_name
         
@@ -406,14 +401,13 @@ def get_upload_progress(task_id: str) -> Dict[str, Any]:
         }
 
 
-def search_documents(query: str, collection_name: Optional[str] = None, language: str = "german", top_k: int = 5) -> Dict[str, Any]:
+def search_documents(query: str, collection_name: Optional[str] = None, top_k: int = 5) -> Dict[str, Any]:
     """
     Search for documents using the API.
     
     Args:
         query: Search query
         collection_name: Optional collection name
-        language: Document language
         top_k: Number of results to return
         
     Returns:
@@ -423,7 +417,6 @@ def search_documents(query: str, collection_name: Optional[str] = None, language
         # Prepare query parameters
         params = {
             "query": query,
-            "language": language,
             "top_k": top_k
         }
         if collection_name:
@@ -581,45 +574,22 @@ def documents_tab():
     if st.session_state.collections:
         st.subheader("Available Collections")
         
-        # Process collections to extract root collection names
+        # Process collections - simplified for unified processing
         processed_collections = {}
         for collection in st.session_state.collections:
             name = collection.get("name", "")
             count = collection.get("count", 0)
             exists = collection.get("exists", False)
             
-            # Determine if this is a base collection or has language suffix
-            if name.endswith("_de") or name.endswith("_en"):
-                # Extract the root name (without suffix)
-                root_name = name[:-3]
-                suffix = name[-3:]
-                
-                # Initialize the root collection entry if not exists
-                if root_name not in processed_collections:
-                    processed_collections[root_name] = {
-                        "name": root_name,
-                        "total_docs": 0,
-                        "languages": [],
-                        "exists": False
-                    }
-                
-                # Update the root collection info
-                processed_collections[root_name]["total_docs"] += count
-                processed_collections[root_name]["exists"] |= exists
-                processed_collections[root_name]["languages"].append(suffix[1:])  # Add without underscore
-            else:
-                # Regular collection without language suffix
-                if name not in processed_collections:
-                    processed_collections[name] = {
-                        "name": name,
-                        "total_docs": count,
-                        "languages": [],
-                        "exists": exists
-                    }
+            processed_collections[name] = {
+                "name": name,
+                "total_docs": count,
+                "exists": exists
+            }
         
         # Display collections with delete buttons
         for collection_name, collection_info in processed_collections.items():
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+            col1, col2, col3 = st.columns([4, 2, 1])
             
             with col1:
                 st.write(f"**{collection_info['name']}**")
@@ -628,10 +598,6 @@ def documents_tab():
                 st.write(f"Documents: {collection_info['total_docs']}")
             
             with col3:
-                languages = ", ".join(collection_info["languages"]) if collection_info["languages"] else "N/A"
-                st.write(f"Languages: {languages}")
-            
-            with col4:
                 if st.button("Delete", key=f"delete_{collection_name}"):
                     with st.spinner(f"Deleting collection '{collection_name}'..."):
                         try:
@@ -663,12 +629,7 @@ def documents_tab():
             type=["pdf", "docx", "xlsx", "txt", "csv", "json", "md"]
         )
         
-        # Language selection
-        upload_language = st.selectbox(
-            "Document Language",
-            options=["german", "english"],
-            index=0
-        )
+        # Language selection removed - using unified processing
         
         # Collection name - now required
         collection_name = st.text_input(
@@ -689,7 +650,6 @@ def documents_tab():
                 with st.spinner("Uploading documents..."):
                     response = upload_documents(
                         uploaded_files,
-                        upload_language,
                         collection_name
                     )
                     
@@ -838,23 +798,12 @@ def settings_tab():
     
     # Language and Collection selection
     st.subheader("Chat Settings")
-    col1, col2 = st.columns(2)
     
-    with col1:
-        language = st.selectbox(
-            "Response Language",
-            options=["german", "english"],
-            index=0 if st.session_state.language == "german" else 1
-        )
-        
-        if language != st.session_state.language:
-            st.session_state.language = language
-            st.success(f"Language changed to {language}.")
+    # Language selection removed - using unified processing
     
-    with col2:
-        # Initialize collection selection in session state if not present
-        if "selected_collection" not in st.session_state:
-            st.session_state.selected_collection = ""
+    # Initialize collection selection in session state if not present
+    if "selected_collection" not in st.session_state:
+        st.session_state.selected_collection = ""
         
         # Get available collections for dropdown
         collections = []

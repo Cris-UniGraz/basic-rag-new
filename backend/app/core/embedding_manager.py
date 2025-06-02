@@ -46,58 +46,38 @@ class EmbeddingManager:
             self._initialized = True
     
     def _init_device_map(self) -> None:
-        """Initialize device mappings for different models."""
-        # Temporarily use CPU only
+        """Initialize device mappings for models."""
+        # Use CPU only
         default_device = "cpu"
         
         logger.info(f"Default device for embeddings: {default_device}")
         
-        # Assign default device to models
+        # Assign default device to the unified model
         self._device_map = {
-            settings.GERMAN_EMBEDDING_MODEL_NAME: default_device,
-            settings.ENGLISH_EMBEDDING_MODEL_NAME: default_device,
+            settings.EMBEDDING_MODEL_NAME: default_device,
         }
     
-    def initialize_models(
-        self, 
-        german_model_name: Optional[str] = None, 
-        english_model_name: Optional[str] = None
-    ) -> None:
+    def initialize_model(self, model_name: Optional[str] = None) -> None:
         """
-        Initialize embedding models for German and English languages.
+        Initialize the unified embedding model.
         
         Args:
-            german_model_name: Name of the German embedding model
-            english_model_name: Name of the English embedding model
+            model_name: Name of the embedding model
         """
-        german_model_name = german_model_name or settings.GERMAN_EMBEDDING_MODEL_NAME
-        english_model_name = english_model_name or settings.ENGLISH_EMBEDDING_MODEL_NAME
+        model_name = model_name or settings.EMBEDDING_MODEL_NAME
         
-        # Load models if they're not already loaded
-        if german_model_name not in self._models:
-            self._models[german_model_name] = self._load_embedding_model(german_model_name)
-            logger.info(f"Loaded German embedding model: {german_model_name}")
-        
-        if english_model_name not in self._models:
-            self._models[english_model_name] = self._load_embedding_model(english_model_name)
-            logger.info(f"Loaded English embedding model: {english_model_name}")
-    
-    @property
-    def german_model(self) -> Embeddings:
-        """Get the German embedding model, loading it if necessary."""
-        model_name = settings.GERMAN_EMBEDDING_MODEL_NAME
+        # Load model if it's not already loaded
         if model_name not in self._models:
             self._models[model_name] = self._load_embedding_model(model_name)
-            logger.info(f"Loaded German embedding model: {model_name}")
-        return self._models[model_name]
+            logger.info(f"Loaded unified embedding model: {model_name}")
     
     @property
-    def english_model(self) -> Embeddings:
-        """Get the English embedding model, loading it if necessary."""
-        model_name = settings.ENGLISH_EMBEDDING_MODEL_NAME
+    def model(self) -> Embeddings:
+        """Get the unified embedding model, loading it if necessary."""
+        model_name = settings.EMBEDDING_MODEL_NAME
         if model_name not in self._models:
             self._models[model_name] = self._load_embedding_model(model_name)
-            logger.info(f"Loaded English embedding model: {model_name}")
+            logger.info(f"Loaded unified embedding model: {model_name}")
         return self._models[model_name]
     
     def get_model(self, model_name: str) -> Embeddings:
@@ -220,10 +200,10 @@ class EmbeddingManager:
         if not texts:
             return []
         
-        # Get the specified model or default to German
+        # Get the specified model or default to the unified model
         if not model_name:
-            model = self.german_model
-            model_name = settings.GERMAN_EMBEDDING_MODEL_NAME
+            model = self.model
+            model_name = settings.EMBEDDING_MODEL_NAME
         else:
             model = self.get_model(model_name)
         
@@ -258,10 +238,10 @@ class EmbeddingManager:
         Returns:
             Embedding vector as a numpy array
         """
-        # Get the specified model or default to German
+        # Get the specified model or default to the unified model
         if not model_name:
-            model = self.german_model
-            model_name = settings.GERMAN_EMBEDDING_MODEL_NAME
+            model = self.model
+            model_name = settings.EMBEDDING_MODEL_NAME
         else:
             model = self.get_model(model_name)
         

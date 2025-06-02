@@ -81,14 +81,13 @@ class QueryOptimizer:
         """
         return hashlib.md5(query.lower().strip().encode()).hexdigest()
     
-    def _store_llm_response(self, query: str, response: str, language: str, sources: List[Dict] = None):
+    def _store_llm_response(self, query: str, response: str, sources: List[Dict] = None):
         """
         Almacena una respuesta LLM en el caché.
         
         Args:
             query: Consulta original
             response: Respuesta generada por el LLM
-            language: Idioma de la consulta/respuesta
             sources: Fuentes utilizadas para generar la respuesta
         """
         # Verificar si el caché avanzado está habilitado
@@ -134,7 +133,6 @@ class QueryOptimizer:
             self.llm_cache[query_hash] = {
                 'response': response,
                 'timestamp': datetime.now(),
-                'language': language,
                 'sources': validated_sources,
                 'original_query': query
             }
@@ -148,13 +146,12 @@ class QueryOptimizer:
             else:
                 self.logger.info(f"No se guardó en caché la consulta '{query[:50]}...' porque no contiene documentos relevantes")
 
-    def get_llm_response(self, query: str, language: str) -> Optional[Dict]:
+    def get_llm_response(self, query: str) -> Optional[Dict]:
         """
         Recupera una respuesta del caché si existe y es válida.
         
         Args:
             query: Consulta del usuario
-            language: Idioma de la consulta
             
         Returns:
             Entrada del caché si existe, None en caso contrario
@@ -165,25 +162,24 @@ class QueryOptimizer:
             return None
             
         query_hash = self._generate_query_hash(query)
-        self.logger.debug(f"Looking for query hash: {query_hash} (query: '{query}', language: {language})")
+        self.logger.debug(f"Looking for query hash: {query_hash} (query: '{query}')")
         self.logger.debug(f"Current cache has {len(self.llm_cache)} entries")
        
         if query_hash in self.llm_cache:
             cache_entry = self.llm_cache[query_hash]
-            self.logger.debug(f"Found cache entry in llm_cache with language: {cache_entry.get('language')}, timestamp: {cache_entry.get('timestamp')}")
+            self.logger.debug(f"Found cache entry in llm_cache with timestamp: {cache_entry.get('timestamp')}")
 
-            # Verificar que la entrada no haya expirado y que el idioma coincida
+            # Verificar que la entrada no haya expirado
             time_check = datetime.now() - cache_entry['timestamp'] < timedelta(hours=self.ttl_hours)
-            language_check = cache_entry['language'] == language
             
-            self.logger.debug(f"LLM Cache - Time check: {time_check}, Language check: {language_check}")
+            self.logger.debug(f"LLM Cache - Time check: {time_check}")
             
-            if time_check and language_check:
+            if time_check:
                 response_length = len(cache_entry.get('response', ''))
                 self.logger.info(f"LLM Cache hit for query: '{query}' - Response length: {response_length}")
                 return cache_entry
             else:
-                self.logger.debug(f"LLM Cache entry found but failed validation - time_valid: {time_check}, language_match: {language_check}")
+                self.logger.debug(f"LLM Cache entry found but expired - time_valid: {time_check}")
         else:
             self.logger.debug(f"Query hash {query_hash} not found in llm_cache")
         
@@ -218,14 +214,13 @@ class QueryOptimizer:
                 
         return document
 
-    def _store_query_result(self, query: str, result: Any, language: str):
+    def _store_query_result(self, query: str, result: Any):
         """
         Almacena el resultado de una consulta en el historial.
         
         Args:
             query: Consulta original
             result: Resultado de la consulta
-            language: Idioma de la consulta
         """
         query_hash = self._generate_query_hash(query)
         
@@ -250,16 +245,15 @@ class QueryOptimizer:
         
         # También almacenar en el caché LLM
         if response:
-            self._store_llm_response(query, response, language, sources)
+            self._store_llm_response(query, response, sources)
 
 
-    def _get_cached_result(self, query: str, language: str) -> Optional[Any]:
+    def _get_cached_result(self, query: str) -> Optional[Any]:
         """
         Busca un resultado en el historial de consultas.
         
         Args:
             query: Consulta a buscar
-            language: Idioma de la consulta
             
         Returns:
             Resultado cacheado o None si no existe
@@ -384,13 +378,12 @@ class QueryOptimizer:
             # Usar implementación nativa como alternativa
             return self._compute_cosine_similarity_native(query_embedding, stored_embedding)
     
-    def _find_similar_query(self, query_embedding: Union[np.ndarray, List], language: str) -> Optional[Dict]:
+    def _find_similar_query(self, query_embedding: Union[np.ndarray, List]) -> Optional[Dict]:
         """
         Busca una consulta semánticamente similar en el historial.
         
         Args:
             query_embedding: Embedding de la consulta actual
-            language: Idioma de la consulta
             
         Returns:
             Consulta similar si existe, None en caso contrario
@@ -405,10 +398,6 @@ class QueryOptimizer:
         highest_similarity = 0.0
         
         for query_hash, data in self.query_embeddings.items():
-            # Solo considerar consultas en el mismo idioma
-            if data['language'] != language:
-                continue
-                
             # Verificar si la entrada ha expirado
             if datetime.now() - data['timestamp'] > timedelta(hours=self.ttl_hours):
                 continue
@@ -420,10 +409,10 @@ class QueryOptimizer:
             
             if similarity > highest_similarity and similarity >= self.query_similarity_threshold:
                 # Verificar que existe una respuesta en caché para esta consulta
-                cached_result = self._get_cached_result(data['query'], language)
+                cached_result = self._get_cached_result(data['query'])
                 
                 # También verificar en el caché LLM
-                llm_cached_result = self.get_llm_response(data['query'], language)
+                llm_cached_result = self.get_llm_response(data['query'])
                 
                 # Solo considerar como coincidencia si tiene una respuesta cacheada válida (no de error)
                 response_to_check = None
@@ -484,14 +473,13 @@ class QueryOptimizer:
         
         return any(error_msg in response for error_msg in error_messages)
     
-    def _store_query_embedding(self, query: str, embedding: Union[np.ndarray, List], language: str):
+    def _store_query_embedding(self, query: str, embedding: Union[np.ndarray, List]):
         """
         Almacena el embedding de una consulta para comparaciones futuras.
         
         Args:
             query: Consulta original
             embedding: Vector de embedding
-            language: Idioma de la consulta
         """
         # Convertir a numpy array si es una lista
         if isinstance(embedding, list):
@@ -502,7 +490,6 @@ class QueryOptimizer:
         self.query_embeddings[query_hash] = {
             'query': query,
             'embedding': embedding,
-            'language': language,
             'timestamp': datetime.now()
         }
         
@@ -517,7 +504,6 @@ class QueryOptimizer:
     
     async def optimize_query(self, 
                         query: str, 
-                        language: str,
                         embedding_model: Any) -> Dict[str, Any]:
         """
         Optimiza una consulta, analizando similitud semántica con consultas anteriores,
@@ -525,7 +511,6 @@ class QueryOptimizer:
         
         Args:
             query: Consulta del usuario
-            language: Idioma de la consulta
             embedding_model: Modelo de embedding a utilizar
             
         Returns:
@@ -538,7 +523,7 @@ class QueryOptimizer:
             return {'result': {'original_query': query}, 'source': 'new'}
         
         # Verificar caché por coincidencia exacta primero (usar llm_cache, no query_history)
-        cached_result = self.get_llm_response(query, language)
+        cached_result = self.get_llm_response(query)
         if cached_result:
             self.metrics.metrics['cache_hits'] += 1
             self.logger.info(f"Exact cache hit for query: '{query}' - Response length: {len(cached_result.get('response', ''))}")
@@ -555,15 +540,15 @@ class QueryOptimizer:
             self._store_embedding(query, str(embedding_model), query_embedding)
         
         # Buscar consultas semánticamente similares
-        similar_query = self._find_similar_query(query_embedding, language)
+        similar_query = self._find_similar_query(query_embedding)
         if similar_query and self.semantic_caching_enabled:
             # Verificar si hay una respuesta en caché LLM para la consulta similar (preferir llm_cache)
-            llm_cached = self.get_llm_response(similar_query['query'], language)
+            llm_cached = self.get_llm_response(similar_query['query'])
             
             # Si no hay en llm_cache, verificar en el historial 
             similar_cached = None
             if not llm_cached or not llm_cached.get('response'):
-                similar_cached = self._get_cached_result(similar_query['query'], language)
+                similar_cached = self._get_cached_result(similar_query['query'])
                 
             # Usar cualquiera de las dos cachés que tenga respuesta válida
             if (llm_cached and llm_cached.get('response')) or (similar_cached and similar_cached.get('response')):
@@ -591,17 +576,16 @@ class QueryOptimizer:
                 return {'result': cache_result, 'source': 'semantic_cache'}
         
         # Almacenar el embedding para futuras comparaciones
-        self._store_query_embedding(query, query_embedding, language)
+        self._store_query_embedding(query, query_embedding)
             
         # Procesar la consulta nueva
         result = {
             'original_query': query,
-            'language': language,
             'embedding': query_embedding,
             'timestamp': datetime.now()
         }
         
-        self._store_query_result(query, result, language)
+        self._store_query_result(query, result)
         self.metrics.metrics['cache_misses'] += 1
         
         # Registrar métricas

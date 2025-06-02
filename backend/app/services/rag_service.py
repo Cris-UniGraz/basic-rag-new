@@ -68,17 +68,14 @@ class RAGService:
             return
         
         try:
-            # Initialize embedding models
-            embedding_manager.initialize_models(
-                settings.GERMAN_EMBEDDING_MODEL_NAME,
-                settings.ENGLISH_EMBEDDING_MODEL_NAME
-            )
+            # Initialize unified embedding model
+            embedding_manager.initialize_model(settings.EMBEDDING_MODEL_NAME)
             
             # Connect to vector store
             vector_store_manager.connect()
             
             self._initialized = True
-            logger.info("RAG service initialized")
+            logger.info("RAG service initialized with unified processing")
             
         except Exception as e:
             logger.error(f"Error initializing RAG service: {e}")
@@ -143,22 +140,16 @@ class RAGService:
     @measure_time(EMBEDDING_RETRIEVAL_DURATION, {"collection": "ensemble"})
     async def get_retriever(
         self,
-        folder_path: str,
-        embedding_model: Any,
         collection_name: str,
         top_k: int = 3,
-        language: str = "german",
         max_concurrency: int = 5
     ) -> EnsembleRetriever:
         """
         Initialize an ensemble retriever for document retrieval.
         
         Args:
-            folder_path: Path to the document folder
-            embedding_model: Embedding model to use
             collection_name: Name of the vector collection
             top_k: Number of top documents to retrieve
-            language: Language of the documents ("german" or "english")
             max_concurrency: Maximum number of concurrent operations
             
         Returns:
@@ -168,7 +159,7 @@ class RAGService:
         await self.ensure_initialized()
         
         # Check cache
-        cache_key = f"{collection_name}_{language}_{top_k}"
+        cache_key = f"{collection_name}_{top_k}"
         if cache_key in self._retrievers:
             return self._retrievers[cache_key]
         
@@ -177,6 +168,9 @@ class RAGService:
             raise ValueError("top_k must be at least 1")
         
         try:
+            # Get unified embedding model
+            embedding_model = embedding_manager.model
+            
             # Get vector store if it exists
             vector_store = vector_store_manager.get_collection(collection_name, embedding_model)
             
@@ -190,43 +184,20 @@ class RAGService:
                     top_k
                 )
             else:
-                # Need to create collection
-                logger.info(f"Creating new collection '{collection_name}'")
-                
-                # Load documents
-                docs = load_documents(paths=folder_path)
-                logger.info(f"Loaded {len(docs)} documents from {folder_path}")
-                
-                # Split documents
-                split_docs = await self.split_documents(docs)
-                
-                # Create vector store - use DONT_KEEP_COLLECTIONS from env
-                vector_store = vector_store_manager.create_collection(
-                    split_docs, 
-                    embedding_model, 
-                    collection_name
-                )
-                
-                # Create parent retriever
-                parent_collection_name = f"{collection_name}_parents"
-                parent_retriever = await self.create_parent_retriever(
-                    vector_store, 
-                    parent_collection_name, 
-                    top_k, 
-                    docs=docs
-                )
+                # Collection doesn't exist
+                logger.warning(f"Collection '{collection_name}' not found")
+                return None
             
             # Configure base retriever
             base_retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
 
             # Create multi-query retriever
-            multi_query_retriever = await self.get_multi_query_retriever(parent_retriever, language)
+            multi_query_retriever = await self.get_multi_query_retriever(parent_retriever)
 
             # Create HyDE retriever
             hyde_retriever = await self.get_hyde_retriever(
                 embedding_model,
                 collection_name,
-                language,
                 top_k
             )
 
@@ -504,8 +475,7 @@ class RAGService:
     @coroutine_manager.coroutine_handler(timeout=30, task_type="query_generation")
     async def generate_step_back_query(
         self,
-        query: str,
-        language: str = "german"
+        query: str
     ) -> str:
         """
         Generate a more generic step-back query from the original query.
@@ -515,7 +485,6 @@ class RAGService:
 
         Args:
             query: Original user query
-            language: Language of the query and response
 
         Returns:
             A more generic version of the query
@@ -544,7 +513,7 @@ class RAGService:
         )
 
         # Check if query contains glossary terms
-        matching_terms = find_glossary_terms_with_explanation(query, language)
+        matching_terms = find_glossary_terms_with_explanation(query)
 
         if not matching_terms:
             # Standard prompt if no glossary terms
@@ -554,7 +523,7 @@ class RAGService:
                     """You are an expert at world knowledge. Your task is to step back and paraphrase
                     a question to a more generic step-back question, which is easier to answer.
                     Please note that the question has been asked in the context of the University of Graz.
-                    Give the generic step-back question in {language}. Here are a few examples:""",
+                    Give the generic step-back question. Here are a few examples:""",
                 ),
                 few_shot_prompt,
                 ("user", "{question}"),
@@ -575,7 +544,7 @@ class RAGService:
 
                     Please consider these specific meanings when generating the step-back question.
                     Please note that the question has been asked in the context of the University of Graz.
-                    Give the generic step-back question in {language}. Here are a few examples:""",
+                    Give the generic step-back question. Here are a few examples:""",
                 ),
                 few_shot_prompt,
                 ("user", "{question}"),
@@ -583,7 +552,7 @@ class RAGService:
 
         # Create and execute chain
         chain = prompt | self.llm_provider | StrOutputParser()
-        step_back_query = await chain.ainvoke({"language": language, "question": query})
+        step_back_query = await chain.ainvoke({"question": query})
 
         if settings.SHOW_INTERNAL_MESSAGES:
             logger.debug(f"Step-back query generation:\nOriginal: {query}\n"
@@ -594,58 +563,42 @@ class RAGService:
     @coroutine_manager.coroutine_handler(timeout=30, task_type="multi_query")
     async def generate_all_queries_in_one_call(
         self,
-        query: str,
-        language: str = "german"
+        query: str
     ) -> Dict[str, str]:
         """
-        Generate all necessary queries in a single LLM call for efficiency.
+        Generate all necessary query variations in a single LLM call for efficiency.
 
         This method generates:
         - The original query
-        - A translated version of the query (to the other language)
         - A step-back version of the original query
-        - A step-back version of the translated query
+        - Alternative formulations of the query
 
         Args:
             query: Original user query
-            language: Language of the original query
 
         Returns:
             Dictionary containing all generated queries
         """
-        # Determine source and target languages
-        source_lang = "German" if language.lower() == "german" else "English"
-        target_lang = "English" if language.lower() == "german" else "German"
-        source_lang_lower = source_lang.lower()
-        target_lang_lower = target_lang.lower()
-
         # Get glossary terms
-        matching_terms = find_glossary_terms_with_explanation(query, language)
+        matching_terms = find_glossary_terms_with_explanation(query)
 
         if not matching_terms:
             # Standard prompt if no glossary terms found
             prompt = ChatPromptTemplate.from_messages([
                 (
                     "system",
-                    f"""You are a multilingual language expert specialized in German and English.
-                    I will give you a question in {source_lang}. Perform the following steps in one go:
-
-                    1. If the question is in {source_lang}, translate it to {target_lang} accurately.
-                    2. Create a more generic "step-back" version of the original {source_lang} question.
-                    3. Create a more generic "step-back" version of the translated {target_lang} question.
-
-                    A "step-back" question is more generic and broader than the original question, making it easier to answer.
+                    """You are an AI assistant. Generate a step-back question for the given query.
+                    A step-back question is more generic and broader than the original question.
+                    
                     For example:
                     - Original: "Could the members of The Police perform lawful arrests?"
                     - Step-back: "What can the members of The Police do?"
 
-                    Respond in JSON format with these exact keys:
-                    {{{{
-                        "original_{source_lang_lower}": "The original question",
-                        "translated_{target_lang_lower}": "The translated question",
-                        "step_back_{source_lang_lower}": "The step-back version of the original question",
-                        "step_back_{target_lang_lower}": "The step-back version of the translated question"
-                    }}}}
+                    Respond in JSON format:
+                    {
+                        "original": "The original question",
+                        "step_back": "The step-back version of the question"
+                    }
                     """
                 ),
                 ("human", "{question}")
@@ -658,44 +611,28 @@ class RAGService:
             prompt = ChatPromptTemplate.from_messages([
                 (
                     "system",
-                    f"""You are a multilingual language expert specialized in German and English.
-                    I will give you a question in {source_lang}. Perform the following steps in one go:
-
-                    1. If the question is in {source_lang}, translate it to {target_lang} accurately.
-                    2. Create a more generic "step-back" version of the original {source_lang} question.
-                    3. Create a more generic "step-back" version of the translated {target_lang} question.
-
-                    The following terms from the question have specific meanings in the context of the University of Graz:
+                    f"""You are an AI assistant. Generate a step-back question for the given query.
+                    
+                    The following terms from the question have specific meanings:
                     {relevant_glossary}
 
-                    IMPORTANT: When translating, preserve these specific terms exactly as they appear. Do not translate them.
-                    Consider these specific meanings when generating step-back questions.
+                    Consider these specific meanings when generating the step-back question.
+                    A step-back question is more generic and broader than the original question.
 
-                    A "step-back" question is more generic and broader than the original question, making it easier to answer.
-                    For example:
-                    - Original: "Could the members of The Police perform lawful arrests?"
-                    - Step-back: "What can the members of The Police do?"
-
-                    Respond in JSON format with these exact keys:
-                    {{{{
-                        "original_{source_lang_lower}": "The original question",
-                        "translated_{target_lang_lower}": "The translated question",
-                        "step_back_{source_lang_lower}": "The step-back version of the original question",
-                        "step_back_{target_lang_lower}": "The step-back version of the translated question"
-                    }}}}
+                    Respond in JSON format:
+                    {{
+                        "original": "The original question",
+                        "step_back": "The step-back version of the question"
+                    }}
                     """
                 ),
                 ("human", "{question}")
             ])
 
-        # Define Pydantic model for JSON validation
+        # Define simplified Pydantic model for JSON validation
         class QueryOutput(BaseModel):
-            original_german: Optional[str] = Field(default=None)
-            original_english: Optional[str] = Field(default=None)
-            translated_english: Optional[str] = Field(default=None)
-            translated_german: Optional[str] = Field(default=None)
-            step_back_german: str = Field(...)
-            step_back_english: str = Field(...)
+            original: str = Field(...)
+            step_back: str = Field(...)
 
         # Create JSON parser
         parser = JsonOutputParser(pydantic_object=QueryOutput)
@@ -727,51 +664,35 @@ class RAGService:
 
             logger.debug(f"Query generation result type: {type(result)}")
 
-            # Format the result based on original language using dictionary access
-            if language.lower() == "german":
-                return {
-                    "query_de": result_dict.get("original_german", query),
-                    "query_en": result_dict.get("translated_english", ""),
-                    "step_back_query_de": result_dict.get("step_back_german", ""),
-                    "step_back_query_en": result_dict.get("step_back_english", "")
-                }
-            else:
-                return {
-                    "query_en": result_dict.get("original_english", query),
-                    "query_de": result_dict.get("translated_german", ""),
-                    "step_back_query_en": result_dict.get("step_back_english", ""),
-                    "step_back_query_de": result_dict.get("step_back_german", "")
-                }
+            # Return simplified result structure
+            return {
+                "original_query": result_dict.get("original", query),
+                "step_back_query": result_dict.get("step_back", query),
+                "multi_queries": []  # Could be extended in the future
+            }
 
         except Exception as e:
             logger.error(f"Error generating multiple queries: {e}")
-            # Fallback to individual methods if combined approach fails
-            if language.lower() == "german":
-                translated = await self.translate_query(query, "German", "English")
-                step_back_de = await self.generate_step_back_query(query, "german")
-                step_back_en = await self.generate_step_back_query(translated, "english")
+            # Fallback to basic step-back generation
+            try:
+                step_back = await self.generate_step_back_query(query)
                 return {
-                    "query_de": query,
-                    "query_en": translated,
-                    "step_back_query_de": step_back_de,
-                    "step_back_query_en": step_back_en
+                    "original_query": query,
+                    "step_back_query": step_back,
+                    "multi_queries": []
                 }
-            else:
-                translated = await self.translate_query(query, "English", "German")
-                step_back_en = await self.generate_step_back_query(query, "english")
-                step_back_de = await self.generate_step_back_query(translated, "german")
+            except Exception as fallback_error:
+                logger.error(f"Fallback query generation also failed: {fallback_error}")
                 return {
-                    "query_en": query,
-                    "query_de": translated,
-                    "step_back_query_en": step_back_en,
-                    "step_back_query_de": step_back_de
+                    "original_query": query,
+                    "step_back_query": query,
+                    "multi_queries": []
                 }
 
     async def get_hyde_retriever(
         self,
         embedding_model: Any,
         collection_name: str,
-        language: str = "german",
         top_k: int = 3
     ) -> Any:
         """
@@ -783,7 +704,6 @@ class RAGService:
         Args:
             embedding_model: Base embedding model to use
             collection_name: Name of the collection to search in
-            language: Language for document generation
             top_k: Number of documents to retrieve
 
         Returns:
@@ -791,12 +711,12 @@ class RAGService:
         """
         def create_hyde_chain(query: str):
             # Check if query contains glossary terms
-            matching_terms = find_glossary_terms_with_explanation(query, language)
+            matching_terms = find_glossary_terms_with_explanation(query)
 
             if not matching_terms:
                 # Basic prompt for document generation
                 prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"Please write a passage in {language} to answer the question."),
+                    ("system", "Please write a passage to answer the question."),
                     ("human", "{question}")
                 ])
             else:
@@ -805,7 +725,7 @@ class RAGService:
                                           for term, explanation in matching_terms])
 
                 prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""Please write a passage in {language} to answer the question.
+                    ("system", f"""Please write a passage to answer the question.
                     The following terms from the question have specific meanings:
 
                     {relevant_glossary}
@@ -855,7 +775,6 @@ class RAGService:
     async def get_multi_query_retriever(
         self,
         base_retriever: Any,
-        language: str = "german",
     ) -> MultiQueryRetriever:
         """
         Create a glossary-aware multi-query retriever.
@@ -865,7 +784,6 @@ class RAGService:
 
         Args:
             base_retriever: The base retriever to use for document retrieval
-            language: The language to use for generating query variations
 
         Returns:
             A configured MultiQueryRetriever
@@ -874,13 +792,13 @@ class RAGService:
 
         def create_multi_query_chain(query: str):
             # Check if query contains glossary terms
-            matching_terms = find_glossary_terms_with_explanation(query, language)
+            matching_terms = find_glossary_terms_with_explanation(query)
 
             if not matching_terms:
                 # Standard prompt if no glossary terms found
                 prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are an AI language model assistant. Your task is to generate
-                    five different versions of the given user question in {language} to retrieve
+                    ("system", """You are an AI language model assistant. Your task is to generate
+                    five different versions of the given user question to retrieve
                     relevant documents. By generating multiple perspectives on the user question,
                     your goal is to help overcome some limitations of distance-based similarity search.
                     Provide these alternative questions separated by newlines."""),
@@ -893,7 +811,7 @@ class RAGService:
 
                 prompt = ChatPromptTemplate.from_messages([
                     ("system", f"""You are an AI language model assistant. Your task is to generate
-                    five different versions of the given user question in {language} to retrieve
+                    five different versions of the given user question to retrieve
                     relevant documents. The following terms from the question have specific meanings:
 
                     {relevant_glossary}
@@ -930,58 +848,12 @@ class RAGService:
 
         return retriever
 
-    @coroutine_manager.coroutine_handler(timeout=30, task_type="translation")
-    async def translate_query(
-        self,
-        query: str,
-        source_language: str,
-        target_language: str
-    ) -> str:
-        """
-        Translate a query from one language to another.
-
-        Args:
-            query: Query to translate
-            source_language: Source language
-            target_language: Target language
-
-        Returns:
-            Translated query
-        """
-        # Check if query contains glossary terms
-        matching_terms = find_glossary_terms(query, source_language)
-
-        if not matching_terms:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", f"Translate the following text from {source_language} to {target_language}. "
-                "Only provide the translation, no explanations."),
-                ("human", "{query}")
-            ])
-        else:
-            # If glossary terms were found, instruct not to translate them
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", f"Translate the following text from {source_language} to {target_language}. "
-                f"Only provide the translation, no explanations. If these terms {matching_terms} appear "
-                f"in the text to be translated, do not translate them but use them as they are written."),
-                ("human", "{query}")
-            ])
-
-        chain = prompt | self.llm_provider | StrOutputParser()
-        translated_query = await chain.ainvoke({"query": query})
-
-        if settings.SHOW_INTERNAL_MESSAGES:
-            logger.debug(f"Translated query:\nOriginal ({source_language}): {query}\n"
-                        f"Translated ({target_language}): {translated_query}")
-
-        return translated_query
-    
     @coroutine_manager.coroutine_handler(task_type="retrieval")
     async def retrieve_context_without_reranking(
         self,
         query: str,
         retriever: Any,
-        chat_history: List[Tuple[str, str]] = [],
-        language: str = "german"
+        chat_history: List[Tuple[str, str]] = []
     ) -> List[Document]:
         """
         Retrieve documents for a query without reranking.
@@ -993,7 +865,6 @@ class RAGService:
             query: Query string
             retriever: Document retriever
             chat_history: Chat history
-            language: Language of the query
             
         Returns:
             List of retrieved documents
@@ -1010,8 +881,7 @@ class RAGService:
             # Retrieve documents 
             retrieved_docs = await retriever.ainvoke({
                 "input": query,
-                "chat_history": formatted_history,
-                "language": language
+                "chat_history": formatted_history
             })
             
             # Log retrieval metrics asíncronamente
@@ -1022,8 +892,7 @@ class RAGService:
                 {
                     "query": query[:100],  # Solo los primeros 100 caracteres
                     "num_docs": len(retrieved_docs),
-                    "sources": [doc.metadata.get('source', 'unknown') for doc in retrieved_docs if hasattr(doc, 'metadata')][:5],  # Máximo 5 fuentes
-                    "language": language
+                    "sources": [doc.metadata.get('source', 'unknown') for doc in retrieved_docs if hasattr(doc, 'metadata')][:5]  # Máximo 5 fuentes
                 }
             )
             
@@ -1306,13 +1175,34 @@ class RAGService:
             
             return retrieved_docs
     
+    async def process_query(
+        self,
+        query: str,
+        retriever: Any,
+        chat_history: List[Tuple[str, str]] = [],
+    ) -> Dict[str, Any]:
+        """
+        Process a query using unified retriever with async pipeline.
+        
+        Args:
+            query: User query
+            retriever: Unified retriever for the collection
+            chat_history: Chat history
+            
+        Returns:
+            Dictionary with response and metadata
+        """
+        return await self.process_queries_with_async_pipeline(
+            query=query,
+            retriever=retriever,
+            chat_history=chat_history
+        )
+    
     async def process_queries_with_async_pipeline(
         self,
         query: str,
-        retriever_de: Any,
-        retriever_en: Any,
+        retriever: Any,
         chat_history: List[Tuple[str, str]] = [],
-        language: str = "german",
     ) -> Dict[str, Any]:
         """
         Advanced asynchronous pipeline for query processing with maximum parallelization.
@@ -1325,10 +1215,8 @@ class RAGService:
         
         Args:
             query: User query
-            retriever_de: German retriever (can be None if collection doesn't exist)
-            retriever_en: English retriever (can be None if collection doesn't exist)
+            retriever: Unified retriever for the collection
             chat_history: Chat history
-            language: Primary language for the response
             
         Returns:
             Dictionary with response and metadata
@@ -1371,15 +1259,14 @@ class RAGService:
             
             async def cache_check_task():
                 """Check cache and query optimization in parallel."""
-                cached_result = self.query_optimizer.get_llm_response(query, language)
+                cached_result = self.query_optimizer.get_llm_response(query)
                 if cached_result:
                     logger.info(f"Cache hit in async pipeline - Response length: {len(cached_result.get('response', ''))}")
                     self.metrics_manager.log_rag_query(
                         query=query,
                         processing_time=0.0,
                         num_sources=len(cached_result.get('sources', [])),
-                        from_cache=True,
-                        language=language
+                        from_cache=True
                     )
                     return {
                         'response': cached_result['response'],
@@ -1391,16 +1278,13 @@ class RAGService:
             
             async def embedding_generation_task():
                 """Generate embedding for query optimization in parallel."""
-                embedding_model = (
-                    embedding_manager.german_model if language == "german" 
-                    else embedding_manager.english_model
-                )
-                return await self.query_optimizer.optimize_query(query, language, embedding_model)
+                embedding_model = embedding_manager.model
+                return await self.query_optimizer.optimize_query(query, embedding_model)
             
             async def glossary_check_task():
                 """Check for glossary terms in parallel."""
                 from app.utils.glossary import find_glossary_terms_with_explanation
-                return find_glossary_terms_with_explanation(query, language)
+                return find_glossary_terms_with_explanation(query)
             
             # Execute Phase 1 tasks in parallel
             phase1_results = await asyncio.gather(
@@ -1439,20 +1323,19 @@ class RAGService:
                 return {'result': optimized_query['result'], 'source': 'cache'}
             elif optimized_query['source'] == 'semantic_cache':
                 logger.info("Semantic cache hit from optimizer")
-                return await self._handle_semantic_cache_result(optimized_query, query, language)
+                return await self._handle_semantic_cache_result(optimized_query, query)
             
             # === PHASE 2: PARALLEL QUERY GENERATION AND PREPARATION ===
             phase2_start = time.time()
             
             async def query_variations_task():
                 """Generate all query variations in parallel."""
-                return await self.generate_all_queries_in_one_call(query, language)
+                return await self.generate_all_queries_in_one_call(query)
             
             async def retriever_validation_task():
-                """Validate retrievers in parallel."""
+                """Validate retriever in parallel."""
                 return {
-                    'german_available': retriever_de is not None,
-                    'english_available': retriever_en is not None
+                    'retriever_available': retriever is not None
                 }
             
             # Execute Phase 2 tasks in parallel
@@ -1474,21 +1357,19 @@ class RAGService:
                 logger.warning(f"Retriever validation failed: {retriever_status}")
                 # Use fallback
                 retriever_status = {
-                    'german_available': retriever_de is not None,
-                    'english_available': retriever_en is not None
+                    'retriever_available': retriever is not None
                 }
             
             phase2_time = time.time() - phase2_start
             logger.debug(f"Phase 2 (query generation) completed in {phase2_time:.2f}s")
             
             # Extract query variations
-            query_de = queries_result["query_de"]
-            query_en = queries_result["query_en"]
-            step_back_query_de = queries_result["step_back_query_de"]
-            step_back_query_en = queries_result["step_back_query_en"]
+            original_query = queries_result["original_query"]
+            step_back_query = queries_result["step_back_query"]
+            multi_queries = queries_result.get("multi_queries", [])
             
-            logger.debug(f"Generated queries - DE: '{query_de[:30]}...', EN: '{query_en[:30]}...', "
-                        f"Step-back DE: '{step_back_query_de[:30]}...', Step-back EN: '{step_back_query_en[:30]}...'")
+            logger.debug(f"Generated queries - Original: '{original_query[:30]}...', "
+                        f"Step-back: '{step_back_query[:30]}...', Multi-queries: {len(multi_queries)}")
             
             # === PHASE 3: PARALLEL DOCUMENT RETRIEVAL ===
             phase3_start = time.time()
@@ -1496,35 +1377,27 @@ class RAGService:
             retrieval_tasks = []
             task_descriptions = []
             
-            # Add German retrieval tasks if available
-            if retriever_status.get('german_available', False):
-                # Original German query
+            # Add retrieval tasks if retriever is available
+            if retriever_status.get('retriever_available', False):
+                # Original query
                 retrieval_tasks.append(
-                    self.retrieve_context_without_reranking(query_de, retriever_de, chat_history, "german")
+                    self.retrieve_context_without_reranking(original_query, retriever, chat_history)
                 )
-                task_descriptions.append("German original")
+                task_descriptions.append("Original query")
                 
-                # Step-back German query
-                if step_back_query_de:
+                # Step-back query
+                if step_back_query:
                     retrieval_tasks.append(
-                        self.retrieve_context_without_reranking(step_back_query_de, retriever_de, chat_history, "german")
+                        self.retrieve_context_without_reranking(step_back_query, retriever, chat_history)
                     )
-                    task_descriptions.append("German step-back")
-            
-            # Add English retrieval tasks if available
-            if retriever_status.get('english_available', False):
-                # Original English query
-                retrieval_tasks.append(
-                    self.retrieve_context_without_reranking(query_en, retriever_en, chat_history, "english")
-                )
-                task_descriptions.append("English original")
+                    task_descriptions.append("Step-back query")
                 
-                # Step-back English query
-                if step_back_query_en:
+                # Multi-queries
+                for i, multi_query in enumerate(multi_queries[:3]):  # Limit to 3 for performance
                     retrieval_tasks.append(
-                        self.retrieve_context_without_reranking(step_back_query_en, retriever_en, chat_history, "english")
+                        self.retrieve_context_without_reranking(multi_query, retriever, chat_history)
                     )
-                    task_descriptions.append("English step-back")
+                    task_descriptions.append(f"Multi-query {i+1}")
             
             if not retrieval_tasks:
                 logger.warning("No retrieval tasks available - no valid retrievers")
@@ -1593,10 +1466,7 @@ class RAGService:
             
             async def reranking_preparation_task():
                 """Prepare reranking model selection."""
-                reranker_model = (
-                    settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
-                    else settings.ENGLISH_COHERE_RERANKING_MODEL
-                )
+                reranker_model = settings.COHERE_RERANKING_MODEL
                 return reranker_model
             
             # Execute Phase 4 tasks in parallel
@@ -1617,10 +1487,7 @@ class RAGService:
             if isinstance(reranker_model, Exception):
                 logger.warning(f"Reranker model preparation failed: {reranker_model}")
                 # Use fallback
-                reranker_model = (
-                    settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
-                    else settings.ENGLISH_COHERE_RERANKING_MODEL
-                )
+                reranker_model = settings.COHERE_RERANKING_MODEL
             
             if not consolidated_docs:
                 logger.warning("No documents retrieved after consolidation")
@@ -1881,14 +1748,13 @@ class RAGService:
         finally:
             await coroutine_manager.cleanup()
     
-    async def _handle_semantic_cache_result(self, optimized_query: Dict, query: str, language: str) -> Dict[str, Any]:
+    async def _handle_semantic_cache_result(self, optimized_query: Dict, query: str) -> Dict[str, Any]:
         """
         Handle semantic cache results with enhanced processing.
         
         Args:
             optimized_query: Optimized query result from cache
             query: Original query
-            language: Query language
             
         Returns:
             Processed cache result

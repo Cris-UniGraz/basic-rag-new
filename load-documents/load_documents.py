@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 
-# PARA USAR ESTE SCRIPT:
-# python load_documents.py --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection uni_test_1_1
-# python load_documents.py --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
-# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docu_4_min/" --collection uni_test_2_0
-# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
+# PARA USAR ESTE SCRIPT (PROCESAMIENTO UNIFICADO):
+# python load_documents.py --dir "C:/Pruebas/RAG Search/documents/" --collection uni_docs_unified
+# python load_documents.py --url http://localhost:8000 --dir "C:/Documents/" --collection my_collection
+# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docs/" --collection uni_test_unified
+#
+# NOTA: Ya no se requieren subcarpetas por idioma. Todos los documentos se procesan desde
+# el directorio especificado directamente, sin importar su idioma.
 #
 # DEPENDENCIAS REQUERIDAS:
 # pip install requests tqdm PyMuPDF docx2txt openpyxl
@@ -26,37 +28,25 @@ def get_files_recursively(directory):
     return files
 
 def upload_documents(base_url, directory_path, collection_name):
-    """Carga documentos al servicio RAG desde subcarpetas por idioma."""
+    """Carga documentos al servicio RAG desde un directorio unificado.
+    
+    PROCESAMIENTO UNIFICADO: Ya no se diferencia por idioma.
+    Todos los documentos se procesan con el mismo embedding model y van a la misma colección.
+    """
     # Verificar que el directorio exista
     if not os.path.exists(directory_path):
         print(f"Error: El directorio {directory_path} no existe.")
         return False
 
-    # Verificar las subcarpetas de idioma
-    de_dir = os.path.join(directory_path, "de")
-    en_dir = os.path.join(directory_path, "en")
-
-    if not (os.path.exists(de_dir) or os.path.exists(en_dir)):
-        print(f"Error: No se encontraron las subcarpetas 'de' o 'en' en {directory_path}.")
-        return False
-
-    print(f"\n📄 Utilidad de carga masiva de documentos para RAG")
-    print(f"==================================================")
+    print(f"\n📄 Utilidad de carga masiva de documentos para RAG (PROCESAMIENTO UNIFICADO)")
+    print(f"============================================================================")
     print(f"URL Base: {base_url}")
     print(f"Directorio: {directory_path}")
-    print(f"Nombre base de colección: {collection_name}")
+    print(f"Nombre de colección: {collection_name}")
+    print(f"Modo: Procesamiento unificado multiidioma sin clasificación")
 
-    success = True
-
-    # Procesar documentos en alemán
-    if os.path.exists(de_dir):
-        de_success = process_language_directory(base_url, de_dir, "german", collection_name)
-        success = success and de_success
-
-    # Procesar documentos en inglés
-    if os.path.exists(en_dir):
-        en_success = process_language_directory(base_url, en_dir, "english", collection_name)
-        success = success and en_success
+    # Procesar todos los documentos del directorio unificado
+    success = process_directory(base_url, directory_path, collection_name)
         
     # En cualquier caso, consideramos que el proceso fue exitoso mientras estemos cargando archivos
 
@@ -68,8 +58,15 @@ def upload_documents(base_url, directory_path, collection_name):
     return success
 
 
-def process_language_directory(base_url, directory, language, collection_name):
-    """Procesa documentos de una carpeta de idioma específica."""
+def process_directory(base_url, directory, collection_name):
+    """Procesa documentos de un directorio unificado.
+    
+    PROCESAMIENTO UNIFICADO: 
+    - Lee todos los archivos del directorio y subdirectorios
+    - No busca subcarpetas por idioma (/de, /en)
+    - Usa un solo embedding model (Azure OpenAI) para todos los documentos
+    - Todos los documentos van a la misma colección unificada
+    """
     # Obtener todos los archivos del directorio y sus subdirectorios
     files = get_files_recursively(directory)
 
@@ -77,8 +74,7 @@ def process_language_directory(base_url, directory, language, collection_name):
         print(f"No se encontraron archivos en {directory}.")
         return True
 
-    lang_name = "alemán" if language == "german" else "inglés"
-    print(f"\nProcesando {len(files)} documentos en {lang_name} desde {directory}...")
+    print(f"\nProcesando {len(files)} documentos desde {directory}...")
 
     # Mostrar barra de progreso para el procesamiento total
     file_progress = tqdm(total=len(files), desc=f"Progreso general", unit="archivo")
@@ -117,13 +113,12 @@ def process_language_directory(base_url, directory, language, collection_name):
             # Preparar datos específicos según el tipo de documento
             ext = Path(file_path).suffix.lower().lstrip('.')
             
-            # Enfoque drásticamente simplificado: conjunto mínimo de campos comunes
-            # Basado exactamente en lo que hace local-adv-rag, pero con campos adicionales requeridos
+            # PROCESAMIENTO UNIFICADO: Campos simplificados sin diferenciación por idioma
+            # Compatible con el endpoint unificado /api/documents/upload
             
             # Lista completa de todos los campos conocidos requeridos por Milvus
             all_required_fields = {
                 # Campos administrativos
-                'language': language,
                 'collection_name': collection_name,
                 
                 # Campos de metadatos comunes
@@ -537,6 +532,47 @@ def get_document_width(file_path):
     return width
 
 
+def verify_unified_compatibility(base_url):
+    """
+    Verifica que el API tenga procesamiento unificado habilitado.
+    Confirma que no hay lógica específica por idioma en el endpoint.
+    """
+    print("\n🔍 Verificando compatibilidad con procesamiento unificado...\n")
+    
+    try:
+        # Verificar que el endpoint de upload no requiere parámetro de idioma
+        response = requests.get(f"{base_url}/docs", timeout=10)
+        if response.status_code == 200:
+            print("✅ API accesible - verificando endpoint de upload unificado")
+            
+            # Intentar una petición POST vacía para ver los parámetros requeridos
+            try:
+                test_response = requests.post(f"{base_url}/api/documents/upload", timeout=5)
+                # Esperamos un error 422 (validation error) que nos dirá qué campos son requeridos
+                if test_response.status_code == 422:
+                    error_detail = test_response.json()
+                    required_fields = [error['loc'][-1] for error in error_detail.get('detail', [])]
+                    
+                    if 'language' in required_fields:
+                        print("❌ ADVERTENCIA: El API aún requiere parámetro 'language' - puede no estar actualizado")
+                        return False
+                    else:
+                        print("✅ Endpoint de upload unificado confirmado - no requiere parámetro 'language'")
+                        print(f"Campos requeridos: {required_fields}")
+                        return True
+                        
+            except Exception as e:
+                print(f"⚠️ No se pudo verificar parámetros del endpoint: {e}")
+                return True  # Asumimos que está bien
+                
+        else:
+            print(f"⚠️ API no accesible. Status: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error verificando compatibilidad: {e}")
+        return False
+
 def check_api_schema(base_url):
     """
     Realiza una verificación directa al API para obtener información sobre el schema.
@@ -575,12 +611,13 @@ def check_api_schema(base_url):
 
 def main():
     """Función principal."""
-    parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG desde carpetas de idioma.')
+    parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG con procesamiento unificado multiidioma.')
     parser.add_argument('--url', default='http://localhost:8000', help='URL base de la API de RAG')
-    parser.add_argument('--dir', help='Directorio base que contiene carpetas "de" y "en"')
-    parser.add_argument('--collection', default='documents', help='Nombre base de la colección')
+    parser.add_argument('--dir', help='Directorio que contiene todos los documentos (sin subcarpetas por idioma)')
+    parser.add_argument('--collection', default='documents', help='Nombre de la colección unificada')
     parser.add_argument('--test', action='store_true', help='Modo de prueba - agrega un sufijo de timestamp a la colección')
     parser.add_argument('--check-schema', action='store_true', help='Verificar esquema API sin cargar documentos')
+    parser.add_argument('--verify-only', action='store_true', help='Solo verificar compatibilidad con procesamiento unificado')
 
     args = parser.parse_args()
     
@@ -589,9 +626,45 @@ def main():
         check_api_schema(args.url)
         return
     
-    # Para cargar documentos, el directorio es obligatorio
-    if not args.dir:
+    # Si solo queremos verificar compatibilidad
+    if args.verify_only:
+        print("\n🔍 MODO VERIFICACIÓN SOLAMENTE")
+        if verify_unified_compatibility(args.url):
+            print("✅ El sistema está configurado correctamente para procesamiento unificado.")
+        else:
+            print("❌ El sistema no parece estar configurado para procesamiento unificado.")
+        return
+    
+    # Verificar compatibilidad con procesamiento unificado antes de proceder
+    print("\n🔧 Verificando compatibilidad con procesamiento unificado...")
+    if not verify_unified_compatibility(args.url):
+        print("❌ El API puede no estar configurado para procesamiento unificado.")
+        print("Asegúrate de que el sistema basic-rag-new esté actualizado.")
+        
+        # Preguntar si quiere continuar anyway
+        continue_anyway = input("\n¿Quieres continuar de todos modos? (y/N): ")
+        if continue_anyway.lower() not in ['y', 'yes', 's', 'si']:
+            print("❌ Operación cancelada.")
+            return
+    else:
+        print("✅ Sistema compatible con procesamiento unificado confirmado.")
+    
+    # Para cargar documentos, el directorio es obligatorio (excepto en modos de verificación)
+    if not args.dir and not args.verify_only:
         parser.error("El argumento --dir es obligatorio para cargar documentos")
+    
+    # Verificar que el directorio existe (solo si se especificó)
+    if args.dir and not os.path.exists(args.dir):
+        print(f"❌ Error: El directorio '{args.dir}' no existe.")
+        return
+    
+    # Informar sobre el procesamiento unificado
+    print(f"\n🚀 PROCESAMIENTO UNIFICADO HABILITADO")
+    print(f"Todos los archivos en '{args.dir}' serán procesados con:")
+    print(f"  - Modelo único: Azure OpenAI text-embedding-ada-002")
+    print(f"  - Colección unificada: {args.collection}")
+    print(f"  - Sin clasificación por idioma")
+    print(f"  - Reranking multiidioma: Cohere rerank-multilingual-v3.0")
         
     # Si estamos en modo de prueba, agregar el timestamp a la colección
     collection_name = args.collection

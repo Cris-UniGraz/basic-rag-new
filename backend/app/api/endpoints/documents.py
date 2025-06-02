@@ -29,7 +29,6 @@ router = APIRouter()
 @router.post("/upload", response_model=Dict[str, Any], summary="Upload documents")
 async def upload_documents(
     files: List[UploadFile] = File(...),
-    language: str = Form("german", description="Document language (german or english)"),
     collection_name: str = Form(..., description="Collection name (required)"),
     background_tasks: BackgroundTasks = None,
 ):
@@ -37,8 +36,7 @@ async def upload_documents(
     Upload documents to the system.
     
     - **files**: Documents to upload
-    - **language**: Document language (german or english)
-    - **collection_name**: Optional collection name (defaults to settings.COLLECTION_NAME)
+    - **collection_name**: Collection name (required)
     """
     start_time = time.time()
     
@@ -46,18 +44,8 @@ async def upload_documents(
         # Increment request counter
         REQUESTS_TOTAL.labels(endpoint="/api/documents/upload", status="processing").inc()
         
-        # Validate language
-        if language.lower() not in ["german", "english"]:
-            raise HTTPException(status_code=400, detail="Language must be 'german' or 'english'")
-        
-        # Append language suffix to collection name if needed
-        language_sufix = get_language_sufix(language)
-        if not collection_name.endswith(f"_{language_sufix}"):
-            collection_name = f"{collection_name}_{language_sufix}"
-            logger.info(f"Using collection name with language suffix: {collection_name}")
-        
         # Get destination directory
-        dest_dir = settings.get_sources_path(language.lower())
+        dest_dir = settings.get_sources_path()
         os.makedirs(dest_dir, exist_ok=True)
         
         # Save uploaded files
@@ -76,7 +64,6 @@ async def upload_documents(
         background_tasks.add_task(
             process_uploaded_documents,
             saved_paths,
-            language,
             collection_name,
             task_id
         )
@@ -94,7 +81,6 @@ async def upload_documents(
             "message": f"Uploaded {len(files)} documents. Processing started in background.",
             "uploaded_files": [Path(path).name for path in saved_paths],
             "collection_name": collection_name,
-            "language": language,
             "processing_time": processing_time,
             "task_id": task_id  # Return task ID for tracking progress
         }
@@ -250,7 +236,6 @@ async def delete_collection(collection_name: str):
 async def search_documents(
     query: str = Query(..., description="Search query"),
     collection_name: Optional[str] = Query(None, description="Collection name"),
-    language: str = Query("german", description="Document language (german or english)"),
     top_k: int = Query(5, description="Number of results to return"),
 ):
     """
@@ -258,7 +243,6 @@ async def search_documents(
     
     - **query**: Search query
     - **collection_name**: Collection name (defaults to settings.COLLECTION_NAME)
-    - **language**: Document language (german or english)
     - **top_k**: Number of results to return
     """
     start_time = time.time()
@@ -267,21 +251,12 @@ async def search_documents(
         # Increment request counter
         REQUESTS_TOTAL.labels(endpoint="/api/documents/search", status="processing").inc()
         
-        # Validate language
-        if language.lower() not in ["german", "english"]:
-            raise HTTPException(status_code=400, detail="Language must be 'german' or 'english'")
+        # Use default collection name if not provided
+        if not collection_name:
+            collection_name = settings.COLLECTION_NAME
         
-        # Append language suffix to collection name if needed
-        language_sufix = get_language_sufix(language)
-        if not collection_name.endswith(f"_{language_sufix}"):
-            collection_name = f"{collection_name}_{language_sufix}"
-            logger.info(f"Using collection name with language suffix: {collection_name}")
-        
-        # Get embedding model based on language
-        embedding_model = (
-            embedding_manager.german_model if language.lower() == "german" 
-            else embedding_manager.english_model
-        )
+        # Get unified embedding model
+        embedding_model = embedding_manager.model
         
         # Get vector store
         vector_store = vector_store_manager.get_collection(collection_name, embedding_model)
@@ -333,7 +308,6 @@ async def search_documents(
 
 async def process_uploaded_documents(
     file_paths: List[str],
-    language: str,
     collection_name: str,
     task_id: str
 ):
@@ -342,16 +316,12 @@ async def process_uploaded_documents(
     
     Args:
         file_paths: List of file paths
-        language: Document language
         collection_name: Collection name
         task_id: Unique ID for tracking progress
     """
     try:
-        # Get embedding model based on language
-        embedding_model = (
-            embedding_manager.german_model if language.lower() == "german" 
-            else embedding_manager.english_model
-        )
+        # Get unified embedding model
+        embedding_model = embedding_manager.model
         
         # Update progress to 10%
         track_upload_progress(task_id, 10, "processing", "Loading and parsing documents")
@@ -412,10 +382,3 @@ async def process_uploaded_documents(
         track_upload_progress(task_id, -1, "error", f"Error processing documents: {str(e)}")
         # Log error but don't raise (background task)
 
-# Function to obtain the correct language code
-def get_language_sufix(language: str) -> str:
-    language_mapping = {
-        "german": "de",
-        "english": "en"
-    }
-    return language_mapping.get(language.lower(), "unknown")
