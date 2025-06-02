@@ -105,13 +105,12 @@ class Settings(BaseSettings):
     DONT_KEEP_COLLECTIONS: bool = Field(default=False)
     
     # Advanced Pipeline Configuration
-    ENABLE_ASYNC_PIPELINE: bool = Field(default=True)  # Enable advanced async pipeline
     ASYNC_PIPELINE_PHASE_LOGGING: bool = Field(default=True)  # Log detailed phase timings
     ASYNC_PIPELINE_PARALLEL_LIMIT: int = Field(default=10)  # Max parallel tasks in pipeline
     
     # Timeout Configuration
     CHAT_REQUEST_TIMEOUT: int = Field(default=180)  # 3 minutes timeout for chat requests
-    RETRIEVAL_TASK_TIMEOUT: int = Field(default=30)  # 30 seconds timeout for individual retrieval tasks
+    RETRIEVAL_TASK_TIMEOUT: int = Field(default=90)  # 30 seconds timeout for individual retrieval tasks
     LLM_GENERATION_TIMEOUT: int = Field(default=120)  # 2 minutes timeout for LLM generation
 
     class Config:

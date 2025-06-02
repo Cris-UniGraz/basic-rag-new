@@ -187,12 +187,6 @@ class QueryOptimizer:
         else:
             self.logger.debug(f"Query hash {query_hash} not found in llm_cache")
         
-        # NUEVO: También buscar en query_history como fallback
-        legacy_result = self._get_cached_result(query, language)
-        if legacy_result and legacy_result.get('response'):
-            response_length = len(legacy_result.get('response', ''))
-            self.logger.info(f"Legacy cache hit for query: '{query}' - Response length: {response_length}")
-            return legacy_result
         
         self.logger.debug(f"Cache miss for query: '{query}' in both caches")
         return None

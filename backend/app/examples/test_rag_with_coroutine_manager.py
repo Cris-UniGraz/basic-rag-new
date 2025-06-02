@@ -153,7 +153,7 @@ async def test_parallel_retrieval():
         logger.info(f"Processing query: '{query}'")
         
         start_time = time.time()
-        result = await rag_service.process_queries_and_combine_results(
+        result = await rag_service.process_queries_with_async_pipeline(
             query=query,
             retriever_de=retriever_de,
             retriever_en=retriever_en,
@@ -267,7 +267,7 @@ async def test_heavy_load_retrieval():
                 logger.info(f"User {user_id} querying: '{query}'")
                 
                 start_time = time.time()
-                result = await rag_service.process_queries_and_combine_results(
+                result = await rag_service.process_queries_with_async_pipeline(
                     query=query,
                     retriever_de=session["retriever_de"],
                     retriever_en=session["retriever_en"],
@@ -424,7 +424,7 @@ async def test_error_recovery():
             
             # Process query with the specified retrievers
             start_time = time.time()
-            result = await rag_service.process_queries_and_combine_results(
+            result = await rag_service.process_queries_with_async_pipeline(
                 query=case['query'],
                 retriever_de=case['retriever_de'],
                 retriever_en=case['retriever_en'],
