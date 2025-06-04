@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 # PARA USAR ESTE SCRIPT (PROCESAMIENTO UNIFICADO):
 # python load_documents.py --dir "C:/Pruebas/RAG Search/demo_docu_5_min/" --collection uni_test_2_0
-# python load_documents.py --url http://localhost:8000 --dir "C:/Pruebas/RAG Search/demo_docu_5_min/" --collection uni_test_2_0
+# python load_documents.py --url http://localhost:8000 --dir "C:/Pruebas/RAG Search/documentos_idioma_all/" --collection uni_docs_1_0
 # python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docs/" --collection uni_test_2_0
 #
 # NOTA: Ya no se requieren subcarpetas por idioma. Todos los documentos se procesan desde

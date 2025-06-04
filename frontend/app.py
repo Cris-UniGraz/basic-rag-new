@@ -490,7 +490,6 @@ def handle_user_input():
     
     # Reset button in the left column
     with input_cols[0]:
-        # Usar componente para ejecutar JavaScript y capturar clics
         if st.button("🗑️", key="reset_btn"):
             st.session_state.messages = []
             st.session_state.sources = []
@@ -499,11 +498,9 @@ def handle_user_input():
                 st.session_state.waiting_for_response = False
             st.rerun()
         
-        # Añadir CSS para estilizar el botón
         st.markdown(
             """
             <style>
-            /* Estilo específico para el botón reset */
             [data-testid="stButton"] button {
                 background-color: #E53935 !important;
                 color: white !important;
@@ -516,6 +513,7 @@ def handle_user_input():
     # Get user input in the right column
     with input_cols[1]:
         user_input = st.chat_input("Stelle eine Frage...")
+    
     if not user_input:
         return
     
@@ -536,12 +534,12 @@ def handle_user_input():
         sources = response.get("sources", [])
         processing_time = response.get("processing_time", 0)
         
-        # Update state - MODIFICADO: incluir sources en el mensaje del asistente
+        # Update state - incluir sources en el mensaje del asistente
         st.session_state.messages.append({
             "role": "assistant",
             "content": assistant_message,
-            "sources": sources,  # Incluimos las fuentes con cada mensaje
-            "processing_time": processing_time,  # También incluimos el tiempo de procesamiento
+            "sources": sources,
+            "processing_time": processing_time,
             "timestamp": datetime.now().isoformat()
         })
         
@@ -549,8 +547,8 @@ def handle_user_input():
         st.session_state.sources = sources
         st.session_state.processing_time = processing_time
     
-    # Display messages (including new user message)
-    display_chat()
+    # ELIMINAR ESTA LÍNEA - NO LLAMAR display_chat() aquí
+    # display_chat()  # <-- ELIMINAR ESTA LÍNEA
       
     # Rerun to update UI
     st.rerun()
