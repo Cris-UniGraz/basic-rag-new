@@ -22,7 +22,7 @@ El sistema utiliza exclusivamente un **pipeline avanzado asíncrono unificado** 
 
 ### **Pipeline Avanzado Asíncrono Unificado** (Único disponible)
 - Procesamiento multiidioma transparente sin clasificación
-- Método: `process_query()` → `process_queries_with_async_pipeline()` 
+- Método: `process_query()`
 - Retriever único para toda la colección
 - Embedding único Azure OpenAI para cualquier idioma
 - Reranking multiidioma con modelo Cohere universal
@@ -54,7 +54,7 @@ El sistema utiliza exclusivamente un **pipeline avanzado asíncrono unificado** 
    - Crea retriever ensemble para procesamiento multiidioma
    - Manejo robusto de errores con fallback
 
-### **Pipeline Avanzado Asíncrono (`process_queries_with_async_pipeline`)**
+### **Pipeline Avanzado Asíncrono (`process_query`)**
 
 #### **Fase 3: Inicialización Paralela Unificada** (`rag_service.py:1260-1330`)
 ```python
@@ -106,7 +106,7 @@ El sistema utiliza exclusivamente un **pipeline avanzado asíncrono unificado** 
 
 ### **A. Funciones de Control de Pipeline**
 - `chat()` en `chat.py:24` - Endpoint principal que utiliza exclusivamente el pipeline avanzado
-- `process_queries_with_async_pipeline()` en `rag_service.py:1884-2438` - **Pipeline Avanzado Asíncrono** (único disponible)
+- `process_query()` en `rag_service.py:1884-2438` - **Pipeline Avanzado Asíncrono** (único disponible)
 
 ### **B. Funciones de Inicialización** 
 - `ensure_initialized()` en `rag_service.py:86` - Inicializa servicios RAG
@@ -157,7 +157,7 @@ El sistema utiliza exclusivamente un **pipeline avanzado asíncrono unificado** 
 # IMPLEMENTADO en rag_service.py:1180-1750
 async def process_query():
     # Método wrapper para proceso unificado
-async def process_queries_with_async_pipeline():
+async def process_query():
     # Procesamiento multiidioma transparente
     # Retriever único para toda la colección
     # Embedding único Azure OpenAI

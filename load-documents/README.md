@@ -1,16 +1,16 @@
-# Load Documents - Utilidad de Carga Masiva (Procesamiento Unificado)
+# Load Documents - Utilidad de Carga Masiva
 
 ## 🎯 Descripción
 
-Utilidad para cargar documentos masivamente al sistema RAG **basic-rag-new** con **procesamiento unificado multiidioma**.
+Utilidad para cargar documentos masivamente al sistema RAG **basic-rag-new**.
 
 ## ✨ Características Principales
 
-### 🔄 **Procesamiento Unificado**
-- **Sin clasificación por idioma**: Todos los documentos se procesan igual
-- **Modelo único**: Azure OpenAI text-embedding-ada-002 para todos los idiomas
-- **Colección unificada**: Sin sufijos `_de` o `_en`
-- **Compatible**: Con la nueva arquitectura unificada de basic-rag-new
+### 🔄 **Procesamiento Simplificado**
+- **Sin subcarpetas requeridas**: Lee documentos de cualquier directorio
+- **Metadatos automáticos**: Extracción automática de metadatos
+- **Colección única**: Todos los documentos en una colección
+- **Compatible**: Con la arquitectura actual de basic-rag-new
 
 ### 📁 **Estructura de Directorios Simplificada**
 ```
@@ -24,7 +24,7 @@ Directorio de documentos/
 └── cualquier_idioma.docx
 ```
 
-**NOTA**: Ya no se requieren subcarpetas `/de` y `/en`. Todos los documentos se procesan desde el directorio especificado directamente.
+**NOTA**: No se requieren subcarpetas específicas. Todos los documentos se procesan desde el directorio especificado, incluyendo subdirectorios.
 
 ## 🚀 Uso
 
@@ -40,7 +40,7 @@ python load_documents.py --url "http://localhost:8000" --dir "/ruta/a/documentos
 # Modo de prueba (agrega timestamp a la colección)
 python load_documents.py --dir "/ruta/a/documentos" --collection "test" --test
 
-# Solo verificar compatibilidad del sistema
+# Solo verificar acceso al API
 python load_documents.py --url "http://localhost:8000" --verify-only
 
 # Verificar esquema de API
@@ -53,10 +53,10 @@ python load_documents.py --url "http://localhost:8000" --check-schema
 |-----------|-------------|-------------|
 | `--url` | URL base del API RAG | `http://localhost:8000` |
 | `--dir` | Directorio que contiene todos los documentos | **Requerido** |
-| `--collection` | Nombre de la colección unificada | `documents` |
+| `--collection` | Nombre de la colección | `documents` |
 | `--test` | Modo de prueba (agrega timestamp) | `False` |
 | `--check-schema` | Verificar esquema de API solamente | `False` |
-| `--verify-only` | Solo verificar compatibilidad | `False` |
+| `--verify-only` | Solo verificar acceso al API | `False` |
 
 ## 📋 Tipos de Archivos Soportados
 

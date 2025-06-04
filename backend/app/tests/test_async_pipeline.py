@@ -1,5 +1,14 @@
 """
 Tests para verificar la funcionalidad del pipeline asíncrono completo.
+
+NOTA: Este archivo necesita ser reescrito para ser compatible con el procesamiento unificado.
+Los tests actuales están diseñados para la arquitectura anterior con retrievers separados por idioma.
+Con el procesamiento unificado, solo se usa un retriever único para todos los documentos.
+
+TODO: Reescribir tests para usar:
+- Un solo retriever unificado en lugar de german_retriever/english_retriever
+- embedding_manager.model en lugar de german_model/english_model  
+- Lógica de pipeline simplificada sin clasificación por idioma
 """
 
 import asyncio
@@ -92,7 +101,7 @@ class TestAsyncPipeline:
             mock_glossary.return_value = []
             
             # Execute pipeline
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 "test query",
                 german_retriever,
                 english_retriever,
@@ -171,7 +180,7 @@ class TestAsyncPipeline:
             
             # Measure execution time
             start_time = time.time()
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 "test query",
                 german_retriever,
                 english_retriever,
@@ -213,7 +222,7 @@ class TestAsyncPipeline:
             
             # Execute pipeline
             start_time = time.time()
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 "test query",
                 german_retriever,
                 english_retriever,
@@ -255,7 +264,7 @@ class TestAsyncPipeline:
             mock_query_gen.side_effect = failing_generate_queries
             
             # Execute pipeline - should handle errors gracefully
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 "test query",
                 german_retriever,
                 english_retriever,
@@ -308,7 +317,7 @@ class TestAsyncPipeline:
             mock_semantic_handler.return_value = mock_semantic_result()
             
             # Execute pipeline
-            result = await rag_service.process_queries_with_async_pipeline(
+            result = await rag_service.process_query(
                 "test query",
                 german_retriever,
                 english_retriever,

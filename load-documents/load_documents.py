@@ -7,9 +7,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 # PARA USAR ESTE SCRIPT (PROCESAMIENTO UNIFICADO):
-# python load_documents.py --dir "C:/Pruebas/RAG Search/documents/" --collection uni_docs_unified
-# python load_documents.py --url http://localhost:8000 --dir "C:/Documents/" --collection my_collection
-# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docs/" --collection uni_test_unified
+# python load_documents.py --dir "C:/Pruebas/RAG Search/demo_docu_5_min/" --collection uni_test_2_0
+# python load_documents.py --url http://localhost:8000 --dir "C:/Pruebas/RAG Search/demo_docu_5_min/" --collection uni_test_2_0
+# python load_documents.py --url http://143.50.27.65:8000 --dir "C:/Pruebas/RAG Search/demo_docs/" --collection uni_test_2_0
 #
 # NOTA: Ya no se requieren subcarpetas por idioma. Todos los documentos se procesan desde
 # el directorio especificado directamente, sin importar su idioma.
@@ -22,9 +22,12 @@ def get_files_recursively(directory):
     files = []
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
-            if not filename.startswith('~') and not filename.startswith('.'):
+            # Filtrar archivos temporales y ocultos
+            if not filename.startswith('~') and not filename.startswith('.') and not filename.startswith('$'):
                 file_path = os.path.join(root, filename)
-                files.append(file_path)
+                # Solo incluir archivos (no directorios)
+                if os.path.isfile(file_path):
+                    files.append(file_path)
     return files
 
 def upload_documents(base_url, directory_path, collection_name):
@@ -89,77 +92,24 @@ def process_directory(base_url, directory, collection_name):
         file_name = os.path.basename(file_path)
         
         try:
-            # Determinar número de páginas, dimensiones y metadatos según tipo, asegurando valores por defecto
-            total_pages = get_document_pages(file_path) or 1  # Si retorna None o 0, usar 1
-            width, height = get_document_dimensions(file_path)  # Obtener ancho y alto
-            width = width or 612  # Si retorna None o 0, usar 612
-            height = height or 864  # Si retorna None o 0, usar 864
-            sheet_index = get_sheet_index(file_path)  # Por defecto es 0
-            sheet_name = get_sheet_name(file_path)  # Por defecto es vacío
-            
-            # Depuración para ver qué valores se están calculando
-            print(f"\nDebug - Archivo: {file_name}")
-            print(f"Debug - Extensión: {Path(file_path).suffix.lower()}")
-            print(f"Debug - Páginas calculadas: {total_pages}")
-            print(f"Debug - Dimensiones calculadas: {width}x{height}")
-            print(f"Debug - Sheet index: {sheet_index}")
-            print(f"Debug - Sheet name: {sheet_name}")
+            # Ya no necesitamos calcular metadatos específicos
+            # El sistema basic-rag-new los extrae automáticamente
+            print(f"\nProcesando archivo: {file_name}")
             
             # Preparar archivo para subir
             files_to_upload = [
                 ('files', (file_name, open(file_path, 'rb'), 'application/octet-stream'))
             ]
             
-            # Preparar datos específicos según el tipo de documento
-            ext = Path(file_path).suffix.lower().lstrip('.')
+            # PROCESAMIENTO UNIFICADO: Compatible con basic-rag-new
+            # El endpoint /api/documents/upload solo requiere collection_name
+            # Los metadatos se extraen automáticamente durante el procesamiento
             
-            # PROCESAMIENTO UNIFICADO: Campos simplificados sin diferenciación por idioma
-            # Compatible con el endpoint unificado /api/documents/upload
-            
-            # Lista completa de todos los campos conocidos requeridos por Milvus
-            all_required_fields = {
-                # Campos administrativos
-                'collection_name': collection_name,
-                
-                # Campos de metadatos comunes
-                'source': file_name,
-                'file_type': 'text',          # Valor por defecto
-                'page_number': '1',           # Valor por defecto
-                'sheet_name': '',             # Valor por defecto
-                'sheet_index': '0',           # Valor por defecto
-                
-                # Campos específicos de dimensiones y paginación
-                'total_pages': str(int(total_pages)),
-                'total_sheets': '1',           # Valor por defecto
-                'width': str(int(width)),
-                'height': str(int(height))
+            upload_data = {
+                'collection_name': collection_name
             }
             
-            # Parámetros base para la API
-            upload_data = all_required_fields.copy()
-            
-            # Sobrescribir campos específicos según el tipo de archivo
-            if ext in ['xls', 'xlsx']:
-                # Excel - valores específicos
-                upload_data.update({
-                    'file_type': 'excel',       # Tipo fijo para simplificar
-                    'page_number': '-1',        # Excel usa -1 en local-adv-rag
-                    'sheet_name': sheet_name,
-                    'total_sheets': str(int(total_pages))
-                })
-            elif ext in ['doc', 'docx']:
-                # Word - valores específicos
-                upload_data.update({
-                    'file_type': 'word',        # Tipo fijo para simplificar
-                })
-            elif ext == 'pdf':
-                # PDF - valores específicos
-                upload_data.update({
-                    'file_type': 'pdf',         # Tipo fijo
-                })
-            
-            # Depurar los datos que se enviarán
-            print(f"Debug - Enviando a la API: {upload_data}")
+            print(f"Subiendo a colección: {collection_name}")
             
             # Subir documento
             try:
@@ -295,282 +245,31 @@ def monitor_upload_progress(base_url, task_id):
     return success
 
 
-def get_document_pages(file_path):
-    """
-    Determina el número de páginas de un documento según su tipo.
-    Replica la lógica de utils/loaders.py de ambos proyectos combinando sus fortalezas
-    """
-    ext = Path(file_path).suffix.lower().lstrip('.')
-    
-    try:
-        # PDF - Usar PyMuPDF para contar páginas
-        if ext == 'pdf':
-            try:
-                import fitz  # PyMuPDF se importa como fitz
-                doc = fitz.open(file_path)
-                return len(doc)
-            except Exception as e:
-                print(f"Error al procesar PDF {file_path}: {e}")
-                return 1
-            
-        # Word - Contar saltos de página en el texto
-        elif ext in ['doc', 'docx']:
-            try:
-                import docx2txt
-                # Extrae el texto completo del archivo Word
-                text = docx2txt.process(file_path)
-                
-                # Limpia y agrupa párrafos para un mejor procesamiento
-                text = clean_extra_whitespace(text)
-                text = group_broken_paragraphs(text)
-                
-                # Dividir por saltos de página (\f) como en loaders.py
-                pages = text.split('\f')
-                
-                # Si no hay saltos de página explícitos, intentamos encontrar 
-                # límites "naturales" o simplemente lo tratamos como una página
-                if len(pages) <= 1:
-                    # En caso de documentos largos sin marcadores de página explícitos,
-                    # podríamos intentar dividir por párrafos o secciones, pero
-                    # para simplicidad lo dejamos como una página en esta versión
-                    pages = [text]
-                
-                num_pages = max(1, len(pages))  # Al menos 1 página
-                print(f"Word - Número de páginas detectadas: {num_pages}")
-                print(f"Word - Usando dimensiones predeterminadas: 612x864")
-                return num_pages
-            except Exception as e:
-                print(f"Error al procesar Word {file_path}: {e}")
-                return 1
-            
-        # Excel - Contar hojas como páginas
-        elif ext in ['xls', 'xlsx']:
-            try:
-                import openpyxl
-                # Cargar el workbook con data_only=True para obtener valores en lugar de fórmulas
-                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-                num_sheets = len(wb.sheetnames)
-                
-                # Verificar que hay al menos una hoja
-                if num_sheets == 0:
-                    print(f"Advertencia: El archivo Excel {file_path} no tiene hojas")
-                    return 1
-                
-                print(f"Excel - Número de hojas detectadas: {num_sheets}")
-                print(f"Excel - Usando dimensiones predeterminadas: 612x864")
-                return num_sheets
-            except Exception as e:
-                print(f"Error al procesar Excel {file_path}: {e}")
-                return 1
-            
-        # Tipo no soportado o desconocido
-        else:
-            print(f"Tipo de archivo no soportado específicamente: {ext}, usando 1 página por defecto")
-            return 1  # Por defecto, asumimos 1 página
-            
-    except Exception as e:
-        print(f"Error general al determinar páginas de {file_path}: {e}")
-        return 1  # En caso de error, asumimos 1 página
+# Las funciones de cálculo de metadatos ya no son necesarias
+# El sistema basic-rag-new extrae automáticamente todos los metadatos
         
-# Funciones auxiliares para procesar texto - similares a las usadas en ambos proyectos
-def clean_extra_whitespace(text):
-    """
-    Limpia espacios en blanco extra del texto.
-    Convierte múltiples espacios en uno solo.
-    """
-    # Reemplazar todos los caracteres de espacio con un solo espacio
-    return " ".join(text.split())
-
-def group_broken_paragraphs(text):
-    """
-    Agrupa párrafos rotos por saltos de línea.
-    """
-    # Reemplazar saltos de línea con espacios para mejorar la lectura
-    return text.replace("\n", " ").replace("\r", " ")
-
-def get_sheet_index(file_path):
-    """
-    Determina el índice de la hoja para documentos Excel.
-    Para otros tipos de documentos, devuelve 0.
-    """
-    ext = Path(file_path).suffix.lower().lstrip('.')
-    
-    try:
-        # Solo para Excel calculamos el sheet_index
-        if ext in ['xls', 'xlsx']:
-            try:
-                # Para la carga de documentos, usamos la primera hoja (índice 0)
-                # ya que cada hoja se procesa como un documento separado
-                return 0
-            except Exception as e:
-                print(f"Error al determinar sheet_index para Excel {file_path}: {e}")
-                return 0
-        else:
-            # Para otros tipos de documentos, sheet_index es 0
-            return 0
-            
-    except Exception as e:
-        print(f"Error general al determinar sheet_index de {file_path}: {e}")
-        return 0  # Valor por defecto en caso de error
-
-def get_sheet_name(file_path):
-    """
-    Determina el nombre de la hoja para documentos Excel.
-    Para otros tipos de documentos, devuelve una cadena vacía.
-    Implementa el enfoque utilizado en local-adv-rag combinado con basic-rag-new.
-    """
-    ext = Path(file_path).suffix.lower().lstrip('.')
-    
-    try:
-        # Solo para Excel obtenemos el nombre de la hoja
-        if ext in ['xls', 'xlsx']:
-            try:
-                import openpyxl
-                # Cargar con data_only=True como hace basic-rag-new para obtener valores no fórmulas
-                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-                
-                # Verificar que hay hojas disponibles
-                if wb.sheetnames:
-                    sheet_name = wb.sheetnames[0]  # Nombre de la primera hoja
-                    print(f"Excel - Nombre de hoja: {sheet_name}")
-                    
-                    # Verificar que el nombre de la hoja no está vacío
-                    if not sheet_name or sheet_name.strip() == "":
-                        sheet_name = f"Sheet_{0}"  # Nombre predeterminado
-                        print(f"Excel - Usando nombre de hoja predeterminado: {sheet_name}")
-                    
-                    return sheet_name
-                else:
-                    # Si no hay hojas, usar un nombre predeterminado
-                    sheet_name = f"Sheet_{0}"
-                    print(f"Excel - Sin hojas, usando nombre predeterminado: {sheet_name}")
-                    return sheet_name
-            except Exception as e:
-                print(f"Error al determinar sheet_name para Excel {file_path}: {e}")
-                # En caso de error, devolver un nombre genérico
-                return f"Sheet_{0}"
-        else:
-            # Para otros tipos de documentos, sheet_name es vacío
-            return ""
-            
-    except Exception as e:
-        print(f"Error general al determinar sheet_name de {file_path}: {e}")
-        return f"Sheet_{0}"  # Valor predeterminado en caso de error
-
-def get_document_dimensions(file_path):
-    """
-    Determina el ancho y alto de un documento según su tipo.
-    Para PDF, intenta obtener las dimensiones reales del documento.
-    Para otros tipos, usa valores estándar.
-    Implementa el enfoque combinado de ambos proyectos.
-    
-    Returns:
-        tuple: (width, height) - dimensiones del documento
-    """
-    ext = Path(file_path).suffix.lower().lstrip('.')
-    
-    # Valores por defecto para todos los tipos de documentos - A4 a 72 DPI
-    # Estos valores son comunes en ambos proyectos
-    DEFAULT_WIDTH = 612   # 8.5 pulgadas a 72 DPI
-    DEFAULT_HEIGHT = 864  # 12 pulgadas a 72 DPI (mayor que A4 para asegurar espacio)
-    
-    try:
-        # PDF - Obtener dimensiones reales de la primera página
-        if ext == 'pdf':
-            try:
-                import fitz  # PyMuPDF se importa como fitz
-                doc = fitz.open(file_path)
-                if len(doc) > 0:
-                    page = doc[0]  # Primera página
-                    width = page.rect.width
-                    height = page.rect.height
-                    print(f"PDF - Dimensiones calculadas: {width}x{height}")
-                    
-                    # Verificar que las dimensiones son valores razonables
-                    if width <= 0 or height <= 0:
-                        print(f"PDF con dimensiones inválidas, usando dimensiones predeterminadas")
-                        return DEFAULT_WIDTH, DEFAULT_HEIGHT
-                        
-                    return float(width), float(height)  # Asegurar que sean float
-                else:
-                    print(f"PDF sin páginas, usando dimensiones predeterminadas")
-                    return DEFAULT_WIDTH, DEFAULT_HEIGHT
-            except Exception as e:
-                print(f"Error al procesar PDF para dimensiones {file_path}: {e}")
-                return DEFAULT_WIDTH, DEFAULT_HEIGHT
-                
-        # Word - usar dimensiones estándar (A4)
-        elif ext in ['doc', 'docx']:
-            # En basic-rag-new y local-adv-rag ambos usan dimensiones estándar para Word
-            print(f"Word - Usando dimensiones predeterminadas: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
-            return DEFAULT_WIDTH, DEFAULT_HEIGHT
-        
-        # Excel - usar dimensiones estándar
-        elif ext in ['xls', 'xlsx']:
-            # En basic-rag-new y local-adv-rag ambos usan dimensiones estándar para Excel
-            print(f"Excel - Usando dimensiones predeterminadas: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
-            return DEFAULT_WIDTH, DEFAULT_HEIGHT
-            
-        # Otros tipos de archivos
-        else:
-            print(f"Tipo no específico: {ext} - Usando dimensiones predeterminadas: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
-            return DEFAULT_WIDTH, DEFAULT_HEIGHT
-            
-    except Exception as e:
-        print(f"Error general al determinar dimensiones de {file_path}: {e}")
-        return DEFAULT_WIDTH, DEFAULT_HEIGHT  # Valores por defecto en caso de error
-
-def get_document_width(file_path):
-    """
-    Determina el ancho de un documento según su tipo.
-    Función de compatibilidad que utiliza get_document_dimensions.
-    
-    Returns:
-        float: ancho del documento
-    """
-    width, _ = get_document_dimensions(file_path)
-    return width
+# Funciones auxiliares de metadatos eliminadas
+# El sistema basic-rag-new maneja automáticamente todos los metadatos
 
 
 def verify_unified_compatibility(base_url):
     """
-    Verifica que el API tenga procesamiento unificado habilitado.
-    Confirma que no hay lógica específica por idioma en el endpoint.
+    Verifica que el API esté accesible para procesamiento unificado.
     """
-    print("\n🔍 Verificando compatibilidad con procesamiento unificado...\n")
+    print("\n🔍 Verificando acceso al API...\n")
     
     try:
-        # Verificar que el endpoint de upload no requiere parámetro de idioma
+        # Verificar que el API esté accesible
         response = requests.get(f"{base_url}/docs", timeout=10)
         if response.status_code == 200:
-            print("✅ API accesible - verificando endpoint de upload unificado")
-            
-            # Intentar una petición POST vacía para ver los parámetros requeridos
-            try:
-                test_response = requests.post(f"{base_url}/api/documents/upload", timeout=5)
-                # Esperamos un error 422 (validation error) que nos dirá qué campos son requeridos
-                if test_response.status_code == 422:
-                    error_detail = test_response.json()
-                    required_fields = [error['loc'][-1] for error in error_detail.get('detail', [])]
-                    
-                    if 'language' in required_fields:
-                        print("❌ ADVERTENCIA: El API aún requiere parámetro 'language' - puede no estar actualizado")
-                        return False
-                    else:
-                        print("✅ Endpoint de upload unificado confirmado - no requiere parámetro 'language'")
-                        print(f"Campos requeridos: {required_fields}")
-                        return True
-                        
-            except Exception as e:
-                print(f"⚠️ No se pudo verificar parámetros del endpoint: {e}")
-                return True  # Asumimos que está bien
-                
+            print("✅ API accesible")
+            return True
         else:
             print(f"⚠️ API no accesible. Status: {response.status_code}")
             return False
             
     except Exception as e:
-        print(f"❌ Error verificando compatibilidad: {e}")
+        print(f"❌ Error verificando API: {e}")
         return False
 
 def check_api_schema(base_url):
@@ -611,13 +310,13 @@ def check_api_schema(base_url):
 
 def main():
     """Función principal."""
-    parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG con procesamiento unificado multiidioma.')
+    parser = argparse.ArgumentParser(description='Carga masiva de documentos para RAG compatible con basic-rag-new.')
     parser.add_argument('--url', default='http://localhost:8000', help='URL base de la API de RAG')
-    parser.add_argument('--dir', help='Directorio que contiene todos los documentos (sin subcarpetas por idioma)')
-    parser.add_argument('--collection', default='documents', help='Nombre de la colección unificada')
+    parser.add_argument('--dir', help='Directorio que contiene todos los documentos (lee recursivamente)')
+    parser.add_argument('--collection', default='documents', help='Nombre de la colección')
     parser.add_argument('--test', action='store_true', help='Modo de prueba - agrega un sufijo de timestamp a la colección')
     parser.add_argument('--check-schema', action='store_true', help='Verificar esquema API sin cargar documentos')
-    parser.add_argument('--verify-only', action='store_true', help='Solo verificar compatibilidad con procesamiento unificado')
+    parser.add_argument('--verify-only', action='store_true', help='Solo verificar acceso al API')
 
     args = parser.parse_args()
     
@@ -626,20 +325,20 @@ def main():
         check_api_schema(args.url)
         return
     
-    # Si solo queremos verificar compatibilidad
+    # Si solo queremos verificar acceso
     if args.verify_only:
         print("\n🔍 MODO VERIFICACIÓN SOLAMENTE")
         if verify_unified_compatibility(args.url):
-            print("✅ El sistema está configurado correctamente para procesamiento unificado.")
+            print("✅ El API está accesible.")
         else:
-            print("❌ El sistema no parece estar configurado para procesamiento unificado.")
+            print("❌ No se puede acceder al API.")
         return
     
-    # Verificar compatibilidad con procesamiento unificado antes de proceder
-    print("\n🔧 Verificando compatibilidad con procesamiento unificado...")
+    # Verificar acceso al API antes de proceder
+    print("\n🔧 Verificando acceso al API...")
     if not verify_unified_compatibility(args.url):
-        print("❌ El API puede no estar configurado para procesamiento unificado.")
-        print("Asegúrate de que el sistema basic-rag-new esté actualizado.")
+        print("❌ No se puede acceder al API.")
+        print("Asegúrate de que el sistema basic-rag-new esté ejecutándose.")
         
         # Preguntar si quiere continuar anyway
         continue_anyway = input("\n¿Quieres continuar de todos modos? (y/N): ")
@@ -647,7 +346,7 @@ def main():
             print("❌ Operación cancelada.")
             return
     else:
-        print("✅ Sistema compatible con procesamiento unificado confirmado.")
+        print("✅ API accesible.")
     
     # Para cargar documentos, el directorio es obligatorio (excepto en modos de verificación)
     if not args.dir and not args.verify_only:
@@ -658,13 +357,13 @@ def main():
         print(f"❌ Error: El directorio '{args.dir}' no existe.")
         return
     
-    # Informar sobre el procesamiento unificado
-    print(f"\n🚀 PROCESAMIENTO UNIFICADO HABILITADO")
-    print(f"Todos los archivos en '{args.dir}' serán procesados con:")
-    print(f"  - Modelo único: Azure OpenAI text-embedding-ada-002")
-    print(f"  - Colección unificada: {args.collection}")
-    print(f"  - Sin clasificación por idioma")
-    print(f"  - Reranking multiidioma: Cohere rerank-multilingual-v3.0")
+    # Informar sobre el procesamiento
+    print(f"\n🚀 PROCESAMIENTO UNIFICADO")
+    print(f"Todos los archivos en '{args.dir}' serán procesados:")
+    print(f"  - Directorio: {args.dir}")
+    print(f"  - Colección: {args.collection}")
+    print(f"  - Sin subcarpetas por idioma requeridas")
+    print(f"  - Metadatos extraídos automáticamente")
         
     # Si estamos en modo de prueba, agregar el timestamp a la colección
     collection_name = args.collection

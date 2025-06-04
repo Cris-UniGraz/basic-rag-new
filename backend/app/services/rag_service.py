@@ -291,7 +291,7 @@ class RAGService:
                 f"Given a chat history and the latest user question which might reference "
                 f"context in the chat history, formulate a standalone question which can "
                 f"be understood without the chat history. Do NOT answer the question, just "
-                f"reformulate it if needed and otherwise return it as is. Give the question in {language}."
+                f"reformulate it if needed and otherwise return it as is."
             )
             
             contextualize_q_prompt = ChatPromptTemplate.from_messages([
@@ -310,7 +310,7 @@ class RAGService:
             # Cache the retriever
             self._retrievers[cache_key] = history_aware_retriever
             
-            logger.info(f"Created retriever for collection '{collection_name}' in {language}")
+            logger.info(f"Created retriever for collection '{collection_name}'")
             return history_aware_retriever
             
         except Exception as e:
@@ -583,7 +583,7 @@ class RAGService:
         matching_terms = find_glossary_terms_with_explanation(query)
 
         if not matching_terms:
-            # Standard prompt if no glossary terms found
+            # Standard prompt if no glossary terms found - CORREGIDO: Escapar las llaves JSON
             prompt = ChatPromptTemplate.from_messages([
                 (
                     "system",
@@ -595,18 +595,18 @@ class RAGService:
                     - Step-back: "What can the members of The Police do?"
 
                     Respond in JSON format:
-                    {
+                    {{{{
                         "original": "The original question",
                         "step_back": "The step-back version of the question"
-                    }
+                    }}}}
                     """
                 ),
                 ("human", "{question}")
             ])
         else:
-            # Include glossary terms in prompt
+            # Include glossary terms in prompt - CORREGIDO: Escapar las llaves JSON
             relevant_glossary = "\n".join([f"{term}: {explanation}"
-                                         for term, explanation in matching_terms])
+                                        for term, explanation in matching_terms])
 
             prompt = ChatPromptTemplate.from_messages([
                 (
@@ -620,10 +620,10 @@ class RAGService:
                     A step-back question is more generic and broader than the original question.
 
                     Respond in JSON format:
-                    {{
+                    {{{{
                         "original": "The original question",
                         "step_back": "The step-back version of the question"
-                    }}
+                    }}}}
                     """
                 ),
                 ("human", "{question}")
@@ -688,6 +688,7 @@ class RAGService:
                     "step_back_query": query,
                     "multi_queries": []
                 }
+
 
     async def get_hyde_retriever(
         self,
@@ -901,8 +902,7 @@ class RAGService:
         except Exception as e:
             async_metadata_processor.log_async("ERROR", f"Error in retrieve_context_without_reranking: {e}", {
                 "error": str(e),
-                "query": query[:100],
-                "language": language
+                "query": query[:100]
             }, priority=3)
             return []
     
@@ -913,8 +913,7 @@ class RAGService:
         query: str,
         retriever: Any,
         reranker_model: str,
-        chat_history: List[Tuple[str, str]] = [],
-        language: str = "german"
+        chat_history: List[Tuple[str, str]] = []
     ) -> List[Document]:
         """
         Retrieve and rerank documents for a query.
@@ -924,7 +923,6 @@ class RAGService:
             retriever: Document retriever
             reranker_model: Reranker model name
             chat_history: Chat history
-            language: Language of the query
             
         Returns:
             List of reranked documents
@@ -941,8 +939,7 @@ class RAGService:
             # Retrieve documents
             retrieved_docs = await retriever.ainvoke({
                 "input": query,
-                "chat_history": formatted_history,
-                "language": language
+                "chat_history": formatted_history
             })
             
             # Skip reranking if no results
@@ -1176,29 +1173,6 @@ class RAGService:
             return retrieved_docs
     
     async def process_query(
-        self,
-        query: str,
-        retriever: Any,
-        chat_history: List[Tuple[str, str]] = [],
-    ) -> Dict[str, Any]:
-        """
-        Process a query using unified retriever with async pipeline.
-        
-        Args:
-            query: User query
-            retriever: Unified retriever for the collection
-            chat_history: Chat history
-            
-        Returns:
-            Dictionary with response and metadata
-        """
-        return await self.process_queries_with_async_pipeline(
-            query=query,
-            retriever=retriever,
-            chat_history=chat_history
-        )
-    
-    async def process_queries_with_async_pipeline(
         self,
         query: str,
         retriever: Any,
@@ -1546,8 +1520,8 @@ class RAGService:
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                            Give always detailed answers in {language}.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                            Give always detailed answers.
 
                             QUERY: ```{question}```
 
@@ -1563,12 +1537,12 @@ class RAGService:
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
 
                             The following terms from the query have specific meanings:
                             {glossary}
 
-                            Please consider these specific meanings when responding. Give always detailed answers in {language}.
+                            Please consider these specific meanings when responding. Give always detailed answers.
 
                             QUERY: ```{question}```
 
@@ -1603,8 +1577,8 @@ class RAGService:
                     You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                     Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                    Give always detailed answers in {language}.
+                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                    Give always detailed answers.
 
                     QUERY: ```{question}```
 
@@ -1634,7 +1608,6 @@ class RAGService:
                     response = await asyncio.wait_for(
                         chain.ainvoke({
                             "context": filtered_context,
-                            "language": language,
                             "question": query,
                             "glossary": relevant_glossary
                         }),
@@ -1644,7 +1617,6 @@ class RAGService:
                     response = await asyncio.wait_for(
                         chain.ainvoke({
                             "context": filtered_context,
-                            "language": language,
                             "question": query
                         }),
                         timeout=settings.LLM_GENERATION_TIMEOUT
@@ -1678,8 +1650,7 @@ class RAGService:
                 query=query,
                 processing_time=total_processing_time,
                 num_sources=len(sources),
-                from_cache=False,
-                language=language
+                from_cache=False
             )
             
             # Store in cache if valid documents
@@ -1696,7 +1667,7 @@ class RAGService:
                         enhanced_metadata['chunk_content'] = doc.page_content
                         enhanced_sources_for_cache.append(enhanced_metadata)
                 
-                self.query_optimizer._store_llm_response(query, response, language, enhanced_sources_for_cache)
+                self.query_optimizer._store_llm_response(query, response, enhanced_sources_for_cache)
                 logger.info(f"Response cached for query: '{query[:50]}...' (relevant documents found)")
             
             logger.info(f"Async pipeline completed in {total_processing_time:.2f}s "
@@ -1735,8 +1706,7 @@ class RAGService:
                 query=query,
                 processing_time=error_time,
                 num_sources=0,
-                from_cache=False,
-                language=language
+                from_cache=False
             )
             
             return {
@@ -1797,10 +1767,7 @@ class RAGService:
                     logger.info(f"Using {len(cached_documents)} cached chunks for reranking with new query")
                     
                     # Perform reranking with stored chunks and new query
-                    reranker_model = (
-                        settings.GERMAN_COHERE_RERANKING_MODEL if language.lower() == "german" 
-                        else settings.ENGLISH_COHERE_RERANKING_MODEL
-                    )
+                    reranker_model = settings.COHERE_RERANKING_MODEL
                     
                     reranked_docs = await self.rerank_docs(query, cached_documents, reranker_model)
                     
@@ -1812,7 +1779,7 @@ class RAGService:
                         
                         # Generate new response using reranked cached chunks
                         from app.utils.glossary import find_glossary_terms_with_explanation
-                        matching_terms = find_glossary_terms_with_explanation(query, language)
+                        matching_terms = find_glossary_terms_with_explanation(query)
                         
                         # Prepare context and sources
                         filtered_context = relevant_docs[:settings.MAX_CHUNKS_LLM]
@@ -1836,8 +1803,8 @@ class RAGService:
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                                Give always detailed answers in {language}.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                                Give always detailed answers.
 
                                 QUERY: ```{question}```
 
@@ -1852,12 +1819,12 @@ class RAGService:
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say in {language} following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
 
                                 The following terms from the query have specific meanings:
                                 {glossary}
 
-                                Please consider these specific meanings when responding. Give always detailed answers in {language}.
+                                Please consider these specific meanings when responding. Give always detailed answers.
 
                                 QUERY: ```{question}```
 
@@ -1871,14 +1838,12 @@ class RAGService:
                         if matching_terms:
                             new_response = await chain.ainvoke({
                                 "context": filtered_context,
-                                "language": language,
                                 "question": query,
                                 "glossary": relevant_glossary
                             })
                         else:
                             new_response = await chain.ainvoke({
                                 "context": filtered_context,
-                                "language": language,
                                 "question": query
                             })
                         
@@ -1889,7 +1854,7 @@ class RAGService:
                             enhanced_metadata['chunk_content'] = doc.page_content
                             enhanced_sources_for_cache.append(enhanced_metadata)
                         
-                        self.query_optimizer._store_llm_response(query, new_response, language, enhanced_sources_for_cache)
+                        self.query_optimizer._store_llm_response(query, new_response, enhanced_sources_for_cache)
                         
                         logger.info(f"Generated new response using {len(filtered_context)} reranked cached chunks from semantic match")
                         return {
@@ -1915,15 +1880,15 @@ class RAGService:
         max_concurrency: int = None
     ) -> Dict[str, Any]:
         """
-        Initialize retrievers for German and English collections in parallel.
+        Initialize unified retriever for the specified collection.
         
         Args:
-            collection_name: Root collection name (language suffixes will be added)
+            collection_name: Collection name to use for retrieval
             top_k: Number of top documents to retrieve (defaults to settings)
             max_concurrency: Maximum concurrent operations (defaults to settings)
             
         Returns:
-            Dictionary with initialized retrievers and metadata
+            Dictionary with initialized retriever and metadata
         """
         await self.ensure_initialized()
         
@@ -1931,167 +1896,77 @@ class RAGService:
         top_k = top_k or settings.MAX_CHUNKS_CONSIDERED
         max_concurrency = max_concurrency or settings.MAX_CONCURRENT_TASKS
         
-        # Determine collection names
-        german_collection = f"{collection_name}_de"
-        english_collection = f"{collection_name}_en"
+        logger.info(f"Starting unified retriever initialization for collection: {collection_name}")
         
-        logger.info(f"Starting parallel retriever initialization for collections: {german_collection}, {english_collection}")
-        
-        # Prepare parallel tasks
-        tasks = []
-        task_info = []
-        
-        # Check German collection and add task if exists
-        try:
-            if utility.has_collection(german_collection):
-                german_task = self.get_retriever(
-                    settings.get_sources_path("de"),
-                    embedding_manager.german_model,
-                    german_collection,
-                    top_k=top_k,
-                    language="german",
-                    max_concurrency=max_concurrency
-                )
-                tasks.append(german_task)
-                task_info.append({
-                    "language": "german",
-                    "collection": german_collection,
-                    "exists": True
-                })
-                logger.debug(f"Added German retriever task for collection: {german_collection}")
-            else:
-                task_info.append({
-                    "language": "german", 
-                    "collection": german_collection,
-                    "exists": False
-                })
-                logger.warning(f"German collection '{german_collection}' does not exist")
-        except Exception as e:
-            logger.error(f"Error checking German collection '{german_collection}': {e}")
-            task_info.append({
-                "language": "german",
-                "collection": german_collection,
-                "exists": False,
-                "error": str(e)
-            })
-        
-        # Check English collection and add task if exists  
-        try:
-            if utility.has_collection(english_collection):
-                english_task = self.get_retriever(
-                    settings.get_sources_path("en"),
-                    embedding_manager.english_model,
-                    english_collection,
-                    top_k=top_k,
-                    language="english",
-                    max_concurrency=max_concurrency
-                )
-                tasks.append(english_task)
-                task_info.append({
-                    "language": "english",
-                    "collection": english_collection,
-                    "exists": True
-                })
-                logger.debug(f"Added English retriever task for collection: {english_collection}")
-            else:
-                task_info.append({
-                    "language": "english",
-                    "collection": english_collection, 
-                    "exists": False
-                })
-                logger.warning(f"English collection '{english_collection}' does not exist")
-        except Exception as e:
-            logger.error(f"Error checking English collection '{english_collection}': {e}")
-            task_info.append({
-                "language": "english",
-                "collection": english_collection,
-                "exists": False,
-                "error": str(e)
-            })
-        
-        # Execute tasks in parallel
-        retrievers = {}
         initialization_metadata = {
-            "total_tasks": len(tasks),
+            "total_tasks": 1,
             "successful_retrievers": 0,
             "failed_retrievers": 0,
             "initialization_time": 0,
-            "task_details": task_info
+            "collection_name": collection_name
         }
         
-        if tasks:
-            logger.info(f"Executing {len(tasks)} retriever initialization tasks in parallel")
-            start_time = time.time()
+        start_time = time.time()
+        retriever = None
+        
+        try:
+            # Check if collection exists
+            if utility.has_collection(collection_name):
+                # Initialize unified retriever
+                retriever = await self.get_retriever(
+                    collection_name,
+                    top_k=top_k,
+                    max_concurrency=max_concurrency
+                )
+                
+                if retriever:
+                    initialization_metadata["successful_retrievers"] = 1
+                    logger.info(f"Successfully initialized unified retriever for collection: {collection_name}")
+                    
+                    # Log async for detailed tracking
+                    async_metadata_processor.log_async("INFO",
+                        f"Unified retriever initialization successful",
+                        {
+                            "collection": collection_name,
+                            "initialization_time": initialization_metadata["initialization_time"]
+                        })
+                else:
+                    initialization_metadata["failed_retrievers"] = 1
+                    logger.error(f"Failed to initialize retriever for collection: {collection_name}")
+            else:
+                initialization_metadata["failed_retrievers"] = 1
+                logger.warning(f"Collection '{collection_name}' does not exist")
+                
+        except Exception as e:
+            initialization_metadata["failed_retrievers"] = 1
+            initialization_metadata["error"] = str(e)
+            logger.error(f"Error initializing unified retriever for '{collection_name}': {e}")
             
-            try:
-                # Execute with exception handling
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                initialization_metadata["initialization_time"] = time.time() - start_time
-                logger.info(f"Parallel initialization completed in {initialization_metadata['initialization_time']:.2f}s")
-                
-                # Process results
-                task_index = 0
-                for info in task_info:
-                    if info["exists"]:
-                        result = results[task_index]
-                        language = info["language"]
-                        
-                        if isinstance(result, Exception):
-                            logger.error(f"Failed to initialize {language} retriever: {result}")
-                            initialization_metadata["failed_retrievers"] += 1
-                            info["initialization_error"] = str(result)
-                            
-                            # Log async for detailed tracking
-                            async_metadata_processor.log_async("ERROR",
-                                f"Parallel retriever initialization failed for {language}",
-                                {
-                                    "language": language,
-                                    "collection": info["collection"],
-                                    "error": str(result)
-                                }, priority=3)
-                        else:
-                            retrievers[language] = result
-                            initialization_metadata["successful_retrievers"] += 1
-                            info["initialized"] = True
-                            logger.info(f"Successfully initialized {language} retriever")
-                            
-                            # Log async for detailed tracking
-                            async_metadata_processor.log_async("INFO",
-                                f"Parallel retriever initialization successful for {language}",
-                                {
-                                    "language": language,
-                                    "collection": info["collection"],
-                                    "initialization_time": initialization_metadata["initialization_time"]
-                                })
-                        
-                        task_index += 1
-                    else:
-                        info["initialized"] = False
-                        
-            except Exception as e:
-                logger.error(f"Critical error during parallel retriever initialization: {e}")
-                initialization_metadata["critical_error"] = str(e)
-                raise RuntimeError(f"Failed to initialize retrievers in parallel: {str(e)}")
-        else:
-            logger.warning("No retriever tasks to execute - no valid collections found")
+            # Log async for detailed tracking
+            async_metadata_processor.log_async("ERROR",
+                f"Unified retriever initialization failed",
+                {
+                    "collection": collection_name,
+                    "error": str(e)
+                }, priority=3)
+        
+        initialization_metadata["initialization_time"] = time.time() - start_time
+        logger.info(f"Unified retriever initialization completed in {initialization_metadata['initialization_time']:.2f}s")
         
         # Log final metrics
         async_metadata_processor.record_performance_async(
-            "parallel_retriever_initialization",
+            "unified_retriever_initialization",
             initialization_metadata["initialization_time"],
             initialization_metadata["successful_retrievers"] > 0,
             {
                 "successful_retrievers": initialization_metadata["successful_retrievers"],
                 "failed_retrievers": initialization_metadata["failed_retrievers"],
-                "total_tasks": initialization_metadata["total_tasks"],
-                "collection_root": collection_name,
-                "languages_initialized": list(retrievers.keys())
+                "collection_name": collection_name
             }
         )
         
         return {
-            "retrievers": retrievers,
+            "retriever": retriever,
             "metadata": initialization_metadata
         }
 

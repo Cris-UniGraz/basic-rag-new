@@ -169,13 +169,13 @@ def limpiar_directorio(temp_dir):
 def main():
     """Función principal del ejemplo."""
     
-    print("🎯 EJEMPLO DE CARGA MASIVA - PROCESAMIENTO UNIFICADO")
+    print("🎯 EJEMPLO DE CARGA MASIVA - COMPATIBLE CON BASIC-RAG-NEW")
     print("=" * 60)
     print()
     print("Este ejemplo demuestra:")
-    print("✨ Carga de documentos multiidioma sin clasificación")
-    print("✨ Procesamiento unificado con modelo único")  
-    print("✨ Verificación automática de compatibilidad")
+    print("✨ Carga de documentos desde cualquier directorio")
+    print("✨ Compatible con basic-rag-new")  
+    print("✨ Verificación de acceso al API")
     print("✨ Monitoreo de progreso en tiempo real")
     print()
     

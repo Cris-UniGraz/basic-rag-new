@@ -22,10 +22,10 @@ def test_async_pipeline_exception_handling():
         
         # Test 2: Method verification
         print("\n2. Testing method availability...")
-        if hasattr(RAGService, 'process_queries_with_async_pipeline'):
-            print("   ✅ process_queries_with_async_pipeline method exists")
+        if hasattr(RAGService, 'process_query'):
+            print("   ✅ process_query method exists")
         else:
-            print("   ❌ process_queries_with_async_pipeline method not found")
+            print("   ❌ process_query method not found")
             return False
         
         # Test 3: Code analysis for fix patterns

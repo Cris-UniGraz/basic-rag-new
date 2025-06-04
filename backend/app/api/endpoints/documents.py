@@ -185,39 +185,15 @@ async def delete_collection(collection_name: str):
         # Increment request counter
         REQUESTS_TOTAL.labels(endpoint="/api/documents/collections", status="processing").inc()
         
-        # Delete collection - handle both root name and direct name formats
-        success = False
-        
-        # First try the exact name
-        logger.info(f"Trying to delete collection with exact name: '{collection_name}'")
+        # Delete collection using unified approach
+        logger.info(f"Trying to delete collection: '{collection_name}'")
         try:
-            if vector_store_manager.delete_collection(collection_name):
-                success = True
+            success = vector_store_manager.delete_collection(collection_name)
+            if not success:
+                raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
         except Exception as e:
-            logger.warning(f"Error deleting collection '{collection_name}': {e}")
-            
-        # Try with language suffixes if exact name failed
-        if not success:
-            logger.info(f"Trying to delete collections with language suffixes")
-            german_collection = f"{collection_name}_de"
-            english_collection = f"{collection_name}_en"
-            
-            try:
-                if vector_store_manager.delete_collection(german_collection):
-                    logger.info(f"Deleted German collection: {german_collection}")
-                    success = True
-            except Exception as e:
-                logger.warning(f"Error deleting German collection '{german_collection}': {e}")
-                
-            try:
-                if vector_store_manager.delete_collection(english_collection):
-                    logger.info(f"Deleted English collection: {english_collection}")
-                    success = True
-            except Exception as e:
-                logger.warning(f"Error deleting English collection '{english_collection}': {e}")
-        
-        if not success:
-            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+            logger.error(f"Error deleting collection '{collection_name}': {e}")
+            raise HTTPException(status_code=500, detail=f"Error deleting collection: {str(e)}")
         
         # Update metrics
         REQUESTS_TOTAL.labels(endpoint="/api/documents/collections", status="success").inc()

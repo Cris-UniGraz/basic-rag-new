@@ -45,7 +45,7 @@ def test_integration():
         print("\n3. Testing method availability...")
         
         required_methods = [
-            'process_queries_with_async_pipeline',
+            'process_query',
             '_handle_semantic_cache_result',
             'initialize_retrievers_parallel'
         ]
@@ -63,11 +63,11 @@ def test_integration():
         import inspect
         
         # Check async pipeline method
-        pipeline_method = getattr(RAGService, 'process_queries_with_async_pipeline')
+        pipeline_method = getattr(RAGService, 'process_query')
         if inspect.iscoroutinefunction(pipeline_method):
-            print("   ✅ process_queries_with_async_pipeline is async")
+            print("   ✅ process_query is async")
         else:
-            print("   ❌ process_queries_with_async_pipeline is not async")
+            print("   ❌ process_query is not async")
             return False
         
         # Check parallel retrievers method
@@ -124,7 +124,7 @@ def test_integration():
         
         integration_patterns = [
             'ENABLE_ASYNC_PIPELINE',
-            'process_queries_with_async_pipeline',
+            'process_query',
             'initialize_retrievers_parallel',
             'pipeline_metrics'
         ]

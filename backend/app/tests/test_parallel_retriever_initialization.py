@@ -1,5 +1,5 @@
 """
-Test para verificar la funcionalidad de inicialización paralela de retrievers.
+Test para verificar la funcionalidad de inicialización paralela de retrievers con procesamiento unificado.
 """
 
 import asyncio
@@ -19,8 +19,8 @@ from app.services.rag_service import RAGService
 from app.core.config import settings
 
 
-class TestParallelRetrieverInitialization:
-    """Pruebas para la inicialización paralela de retrievers."""
+class TestUnifiedRetrieverInitialization:
+    """Pruebas para la inicialización unificada de retrievers."""
     
     @pytest.fixture
     def mock_llm_provider(self):
@@ -33,8 +33,8 @@ class TestParallelRetrieverInitialization:
         return RAGService(mock_llm_provider)
     
     @pytest.mark.asyncio
-    async def test_parallel_initialization_both_collections_exist(self, rag_service):
-        """Test cuando ambas colecciones (alemana e inglesa) existen."""
+    async def test_unified_initialization_collection_exists(self, rag_service):
+        """Test cuando la colección unificada existe."""
         
         # Mock de utilidades y métodos necesarios
         with patch('app.services.rag_service.utility.has_collection') as mock_has_collection, \
@@ -47,24 +47,16 @@ class TestParallelRetrieverInitialization:
             mock_has_collection.return_value = True
             mock_settings.MAX_CHUNKS_CONSIDERED = 5
             mock_settings.MAX_CONCURRENT_TASKS = 3
-            mock_settings.get_sources_path.side_effect = lambda lang: f"/path/to/{lang}"
-            mock_embedding_manager.german_model = MagicMock()
-            mock_embedding_manager.english_model = MagicMock()
+            mock_embedding_manager.model = MagicMock()
             mock_ensure_initialized.return_value = None
             
-            # Mock retrievers
-            mock_german_retriever = MagicMock()
-            mock_english_retriever = MagicMock()
+            # Mock unified retriever
+            mock_unified_retriever = MagicMock()
             
-            # Configurar delay simulado para probar paralelización
+            # Configurar delay simulado para probar inicialización
             async def mock_get_retriever_delayed(*args, **kwargs):
                 await asyncio.sleep(0.1)  # Simular tiempo de inicialización
-                language = kwargs.get('language', 'unknown')
-                if language == 'german':
-                    return mock_german_retriever
-                elif language == 'english':
-                    return mock_english_retriever
-                return MagicMock()
+                return mock_unified_retriever
             
             mock_get_retriever.side_effect = mock_get_retriever_delayed
             
@@ -74,33 +66,26 @@ class TestParallelRetrieverInitialization:
             execution_time = time.time() - start_time
             
             # Verificaciones
-            assert "retrievers" in result
+            assert "retriever" in result
             assert "metadata" in result
             
-            retrievers = result["retrievers"]
+            retriever = result["retriever"]
             metadata = result["metadata"]
             
-            # Verificar que ambos retrievers fueron inicializados
-            assert "german" in retrievers
-            assert "english" in retrievers
-            assert retrievers["german"] == mock_german_retriever
-            assert retrievers["english"] == mock_english_retriever
+            # Verificar que el retriever unificado fue inicializado
+            assert retriever == mock_unified_retriever
             
             # Verificar metadata
-            assert metadata["successful_retrievers"] == 2
+            assert metadata["successful_retrievers"] == 1
             assert metadata["failed_retrievers"] == 0
-            assert metadata["total_tasks"] == 2
+            assert metadata["total_tasks"] == 1
             
-            # Verificar que la ejecución fue paralela (debería ser menos de 0.2s)
-            # Si fuera secuencial, tomaría al menos 0.2s (2 * 0.1s)
-            assert execution_time < 0.15, f"Execution time {execution_time:.3f}s suggests non-parallel execution"
-            
-            # Verificar que get_retriever fue llamado dos veces
-            assert mock_get_retriever.call_count == 2
+            # Verificar que get_retriever fue llamado una vez
+            assert mock_get_retriever.call_count == 1
     
     @pytest.mark.asyncio
-    async def test_parallel_initialization_one_collection_fails(self, rag_service):
-        """Test cuando una colección falla al inicializar."""
+    async def test_unified_initialization_collection_fails(self, rag_service):
+        """Test cuando la colección falla al inicializar."""
         
         with patch('app.services.rag_service.utility.has_collection') as mock_has_collection, \
              patch('app.services.rag_service.settings') as mock_settings, \
@@ -112,22 +97,12 @@ class TestParallelRetrieverInitialization:
             mock_has_collection.return_value = True
             mock_settings.MAX_CHUNKS_CONSIDERED = 5
             mock_settings.MAX_CONCURRENT_TASKS = 3
-            mock_settings.get_sources_path.side_effect = lambda lang: f"/path/to/{lang}"
-            mock_embedding_manager.german_model = MagicMock()
-            mock_embedding_manager.english_model = MagicMock()
+            mock_embedding_manager.model = MagicMock()
             mock_ensure_initialized.return_value = None
             
-            # Mock para simular fallo en retriever alemán
-            mock_english_retriever = MagicMock()
-            
+            # Mock para simular fallo en retriever
             async def mock_get_retriever_with_failure(*args, **kwargs):
-                language = kwargs.get('language', 'unknown')
-                if language == 'german':
-                    raise Exception("Failed to initialize German retriever")
-                elif language == 'english':
-                    await asyncio.sleep(0.05)
-                    return mock_english_retriever
-                return MagicMock()
+                raise Exception("Failed to initialize unified retriever")
             
             mock_get_retriever.side_effect = mock_get_retriever_with_failure
             
@@ -135,21 +110,19 @@ class TestParallelRetrieverInitialization:
             result = await rag_service.initialize_retrievers_parallel("test_collection")
             
             # Verificaciones
-            retrievers = result["retrievers"]
+            retriever = result["retriever"]
             metadata = result["metadata"]
             
-            # Solo el retriever inglés debería estar inicializado
-            assert "german" not in retrievers
-            assert "english" in retrievers
-            assert retrievers["english"] == mock_english_retriever
+            # El retriever debería ser None ya que falló
+            assert retriever is None
             
             # Verificar metadata de fallo
-            assert metadata["successful_retrievers"] == 1
+            assert metadata["successful_retrievers"] == 0
             assert metadata["failed_retrievers"] == 1
-            assert metadata["total_tasks"] == 2
+            assert metadata["total_tasks"] == 1
     
     @pytest.mark.asyncio
-    async def test_parallel_initialization_no_collections_exist(self, rag_service):
+    async def test_unified_initialization_no_collection_exists(self, rag_service):
         """Test cuando ninguna colección existe."""
         
         with patch('app.services.rag_service.utility.has_collection') as mock_has_collection, \
@@ -166,14 +139,14 @@ class TestParallelRetrieverInitialization:
             result = await rag_service.initialize_retrievers_parallel("test_collection")
             
             # Verificaciones
-            retrievers = result["retrievers"]
+            retriever = result["retriever"]
             metadata = result["metadata"]
             
-            # No debería haber retrievers inicializados
-            assert len(retrievers) == 0
+            # No debería haber retriever inicializado
+            assert retriever is None
             assert metadata["successful_retrievers"] == 0
-            assert metadata["failed_retrievers"] == 0
-            assert metadata["total_tasks"] == 0
+            assert metadata["failed_retrievers"] == 1
+            assert metadata["total_tasks"] == 1
     
     @pytest.mark.asyncio 
     async def test_parallel_initialization_performance_gain(self, rag_service):

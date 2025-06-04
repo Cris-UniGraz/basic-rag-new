@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     from app.models.vector_store import vector_store_manager
     
     # Initialize embedding models
-    embedding_manager.initialize_models()
+    embedding_manager.initialize_model()
     
     # Initialize vector store with retries
     for attempt in range(3):
@@ -230,12 +230,19 @@ async def health_check():
     from app.core.embedding_manager import embedding_manager
     embedding_status = "unknown"
     try:
-        if embedding_manager.german_model and embedding_manager.english_model:
+        # Cambiar esta parte para usar el modelo unificado
+        if hasattr(embedding_manager, '_models') and embedding_manager._models:
             embedding_status = "loaded"
             logger.info("Health check: Embedding models are loaded")
         else:
-            embedding_status = "not_loaded"
-            logger.warning("Health check: Embedding models are not loaded")
+            # Intentar inicializar el modelo si no está cargado
+            try:
+                model = embedding_manager.model  # Esto cargará el modelo si no existe
+                embedding_status = "loaded"
+                logger.info("Health check: Embedding model loaded successfully")
+            except Exception as init_error:
+                embedding_status = "not_loaded"
+                logger.warning(f"Health check: Failed to load embedding model: {init_error}")
     except Exception as e:
         embedding_status = "error"
         logger.error(f"Health check: Error checking embedding models: {e}")

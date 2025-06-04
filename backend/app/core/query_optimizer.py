@@ -236,7 +236,6 @@ class QueryOptimizer:
             'response': response,
             'sources': sources,
             'timestamp': datetime.now(),
-            'language': language,
             'original_query': query,
             'usage_count': 0
         }
@@ -266,7 +265,6 @@ class QueryOptimizer:
                 return {
                     'response': entry.get('response', ''),
                     'sources': entry.get('sources', []),
-                    'language': entry.get('language', language),
                     'original_query': entry.get('original_query', query),
                     'from_cache': True
                 }

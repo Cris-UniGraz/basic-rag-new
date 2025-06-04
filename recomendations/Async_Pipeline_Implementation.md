@@ -42,7 +42,7 @@ FASE 6: LLM Response Generation
 
 **Ubicación**: `backend/app/services/rag_service.py:1884-2339`
 
-Se agregó `process_queries_with_async_pipeline()` que implementa:
+Se agregó `process_query()` que implementa:
 
 - ✅ **6 fases de procesamiento optimizadas**
 - ✅ **Paralelización máxima con `asyncio.gather()`**
