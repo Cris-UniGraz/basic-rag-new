@@ -94,9 +94,9 @@ Production-ready configuration and deployment automation:
 - **Observability Stack**: Prometheus, Grafana, alerting, and distributed tracing
 - **Automation**: Deployment scripts and health validation
 
-## Main Query Processing Flow with Persistent Retriever Architecture
+## Main Query Processing Flow with Persistent Retriever Architecture - 6 Fases Principales
 
-### 1. Request Reception and Observability (Production-Ready)
+### **Fase 1: Request Reception y Cache Optimization** (chat.py:76-283)
 - User submits a query through the frontend (Streamlit)
 - **Request Tracing**: Distributed tracing begins with unique trace ID
 - **Observability**: Prometheus metrics capture request start time
@@ -106,8 +106,10 @@ Production-ready configuration and deployment automation:
 - Chat history is formatted from conversation messages
 - **Background Logging**: Structured logging with JSON format for observability
 - **Health Validation**: Automatic dependency health checks before processing
+- **Service Mode Determination**: Selecciona entre persistent_full, persistent_degraded, o fallback
+- **Persistent Retriever Initialization**: Obtiene retriever persistente del cache con health monitoring
 
-### 2. Cache Check Phase
+### **Fase 1.5: Advanced Cache Check** (query_optimizer.py)
 The system implements a sophisticated two-level caching mechanism with enhanced chunk content storage:
 
 #### 2.1 Exact Cache Match
@@ -159,8 +161,8 @@ The system implements a sophisticated two-level caching mechanism with enhanced 
 - **Performance Tracking**: Monitors cache effectiveness and chunk content quality
 - **Error Prevention**: Prevents LLM from receiving inadequate context due to missing content
 
-### 3. Query Generation and Enhancement (Unified)
-If no cache hit (exact or semantic with valid data), the system generates multiple query variations:
+### **Fase 2: Query Generation and Enhancement** (rag_service.py:1304-1347)
+If no cache hit (exact or semantic with valid data), the system generates multiple query variations using the async pipeline:
 
 #### 3.1 Unified Multi-Query Generation
 Using a single LLM call, the system generates:
@@ -175,8 +177,17 @@ Using a single LLM call, the system generates:
 - Combines definitions: "German definition | EN: English definition"
 - **SIMPLIFIED**: Single glossary lookup without language parameter
 
-### 4. Persistent Retriever Execution Phase
+### **Fase 3: Persistent Retriever Execution Phase** (rag_service.py:1348-1399)
 The system uses **Persistent Retrievers** with intelligent lifecycle management and health monitoring:
+
+#### **EnsembleRetriever con 5 Retrievers Principales:**
+El sistema utiliza un EnsembleRetriever que combina 5 retrievers especializados:
+
+1. **Base Vector Retriever** (Weight: 0.1) - Búsqueda vectorial básica en Milvus
+2. **Parent Document Retriever** (Weight: 0.3) - Recuperación jerárquica de documentos padre
+3. **Multi-Query Retriever** (Weight: 0.4) - Genera múltiples variaciones de la query
+4. **HyDE Retriever** (Weight: 0.1) - Hypothetical Document Embedder para documentos sintéticos
+5. **BM25 Retriever** (Weight: 0.1) - Búsqueda por palabras clave TF-IDF
 
 #### 4.1 Retriever Health Validation
 - **Health Checks**: Automatic validation of all persistent retrievers before use
@@ -212,15 +223,17 @@ The system maintains persistent instances of specialized retrievers:
 - Optimized TF-IDF calculations with caching
 - Weight: `RETRIEVER_WEIGHTS_BM25` (default: 0.1)
 
-#### 4.3 Intelligent Parallel Retrieval with Observability
-- **Parallel Processing**: Multiple queries processed simultaneously with persistent connections
+#### 3.1 Intelligent Parallel Retrieval with Observability
+- **Parallel Processing**: Ejecuta Original Query, Step-back Query, y Multi-queries simultáneamente
+- **Task Management**: Usa `coroutine_manager.gather_coroutines()` para paralelización eficiente
 - **Distributed Tracing**: Full tracing of retrieval operations across all retrievers
 - **Performance Metrics**: Real-time metrics collection for each retriever type
 - **Error Handling**: Graceful degradation and automatic fallback mechanisms
 - **Resource Management**: Intelligent connection pooling and resource optimization
 - **Background Metrics**: Asynchronous logging of retrieval performance and success rates
+- **Timeout Management**: `settings.RETRIEVAL_TASK_TIMEOUT` para evitar bloqueos
 
-### 5. Document Reranking Phase (Multilingual)
+### **Fase 4: Document Processing y Reranking** (rag_service.py:1401-1479)
 #### 5.1 Multilingual Unified Reranking
 - All retrieved documents are combined into a single list
 - **MULTILINGUAL RERANKING**: Cohere rerank-multilingual-v3.0 scores documents against the original query
@@ -233,24 +246,38 @@ The system maintains persistent instances of specialized retrievers:
 - Top `MAX_CHUNKS_LLM` (default: 6) documents are selected
 - Source metadata is preserved for citation
 
-### 6. Response Generation Phase
-#### 6.1 Unified Context Preparation
-- Selected documents are formatted as context
-- **MULTILINGUAL GLOSSARY**: Terms and definitions are included if relevant (both German and English)
-- **UNIFIED PROMPT**: Language-agnostic prompt templates applied
-- **TRANSPARENT PROCESSING**: Same prompt generation regardless of input language
+### **Fase 5: Response Preparation** (rag_service.py:1481-1597)
+#### 5.1 Context Preparation Task
+- **Document Consolidation**: Combina y deduplica documentos de todos los retrievers
+- **Reranking Execution**: Usa Cohere rerank-multilingual-v3.0 para scoring
+- **Document Filtering**: Filtra documentos por `MIN_RERANKING_SCORE` (default: 0.2)
+- **Context Assembly**: Selecciona top `MAX_CHUNKS_LLM` (default: 6) documentos
+- **Source Metadata**: Preserva información de source, page_number, reranking_score
 
-#### 6.2 Unified LLM Response Generation
-- Azure OpenAI GPT model generates response
-- Context window includes retrieved documents and query
+#### 5.2 Prompt Preparation Task
+- **Glossary Integration**: Incluye términos del glosario si son relevantes
+- **Template Selection**: Selecciona template con o sin glosario según contexto
+- **Parallel Execution**: Ejecuta preparación de contexto y prompt simultaneamente
+
+### **Fase 6: LLM Response Generation** (rag_service.py:1599-1629)
+#### 6.1 Unified LLM Chain Execution
+- **Chain Creation**: `prompt_template | self.llm_provider | StrOutputParser()`
+- **Timeout Management**: `settings.LLM_GENERATION_TIMEOUT` para evitar bloqueos
+- **Context Window**: Incluye documentos filtrados y query optimizada
 - **MULTILINGUAL RESPONSE**: Response generated in appropriate language based on query context
 - **UNIFIED MODEL**: Single LLM handles all language combinations
 
-#### 6.3 Response Validation
-- System checks if valid response was generated
-- If no relevant information found, returns appropriate message
-- Validates minimum relevance threshold was met
-- **Error Prevention**: Filters out error responses from being cached
+#### 6.2 Pipeline Metrics Collection
+- **Phase Timing**: Registra tiempo de cada una de las 6 fases principales
+- **Total Processing Time**: Tiempo total desde request hasta response
+- **Background Logging**: Métricas enviadas a `async_metadata_processor`
+- **Performance Tracking**: `pipeline_metrics` con breakdown detallado
+
+#### 6.3 Final Processing
+- **Response Validation**: Verifica que la respuesta sea válida
+- **Cache Storage**: Almacena response si cumple criterios de calidad
+- **Metrics Registration**: Registra métricas finales con `metrics_manager`
+- **Resource Cleanup**: Ejecuta `coroutine_manager.cleanup()` en background
 
 ### 7. Enhanced Unified Caching and Storage
 

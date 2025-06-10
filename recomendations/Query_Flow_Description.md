@@ -1,10 +1,48 @@
-# Análisis del Flujo de Consultas RAG - Arquitectura de Retriever Persistente
+# Análisis del Flujo de Consultas RAG - Pipeline de 6 Fases con EnsembleRetriever
 
-## 1. Flujo de Trabajo del Backend con Observabilidad (Query → Respuesta)
+## 1. Flujo de Trabajo del Backend con Pipeline Asíncrono (Query → Respuesta)
 
-El flujo completo implementa una **Arquitectura de Retriever Persistente** con observabilidad comprehensiva desde que llega una consulta hasta la respuesta generada:
+El flujo completo implementa un **Pipeline Asíncrono de 6 Fases** con EnsembleRetriever de 5 componentes y observabilidad comprehensiva:
 
-**Advanced Request Flow**: Usuario → Frontend → `/api/chat` → Observability Layer → Persistent Retriever Manager → Unified RAG Service → LLM → Response + Metrics
+**Advanced Request Flow**: Usuario → Frontend → `/api/chat` → **6 Fases Pipeline** → EnsembleRetriever (5 Retrievers) → LLM → Response + Metrics
+
+## Pipeline de 6 Fases Principales
+
+### **Fase 1: Cache Optimization y Validation** (chat.py:176-283)
+- **Service Mode Selection**: persistent_full/persistent_degraded/fallback
+- **Cache Check**: Exact match y semantic similarity
+- **Persistent Retriever Get**: `get_persistent_retriever()` con health monitoring
+- **Fallback Logic**: Traditional RAG service si falla persistent
+
+### **Fase 2: Query Generation** (rag_service.py:1304-1347)
+- **Multi-Query Generation**: `generate_all_queries_in_one_call()`
+- **Original Query**: Query del usuario sin modificación
+- **Step-back Query**: Versión más genérica para contexto amplio
+- **Multi-queries**: Variaciones adicionales para mejor recall
+
+### **Fase 3: Parallel Retrieval** (rag_service.py:1348-1399)
+- **EnsembleRetriever Execution**: 5 retrievers ejecutados en paralelo
+- **Timeout Management**: `settings.RETRIEVAL_TASK_TIMEOUT`
+- **Task Coordination**: `asyncio.gather()` con manejo de excepciones
+- **Result Aggregation**: Combinación de documentos de todos los retrievers
+
+### **Fase 4: Processing y Reranking** (rag_service.py:1401-1479)
+- **Document Consolidation**: Deduplicación por content hash
+- **Cohere Reranking**: rerank-multilingual-v3.0 scoring
+- **Relevance Filtering**: Filtra por `MIN_RERANKING_SCORE`
+- **Final Selection**: Top `MAX_CHUNKS_LLM` documentos
+
+### **Fase 5: Response Preparation** (rag_service.py:1481-1597)
+- **Context Assembly**: Formateo de documentos seleccionados
+- **Prompt Preparation**: Template con/sin glosario según contexto
+- **Parallel Processing**: Contexto y prompt preparados simultáneamente
+- **Quality Validation**: Verificación de relevancia mínima
+
+### **Fase 6: LLM Generation** (rag_service.py:1599-1629)
+- **Chain Execution**: `prompt_template | llm_provider | StrOutputParser()`
+- **Timeout Protection**: `settings.LLM_GENERATION_TIMEOUT`
+- **Response Generation**: Azure OpenAI GPT con contexto optimizado
+- **Metrics Collection**: Pipeline metrics con breakdown por fase
 
 ## 🎯 **MIGRACIÓN COMPLETADA: Procesamiento Unificado de Documentos**
 
@@ -20,15 +58,48 @@ El sistema ha sido **completamente migrado** de procesamiento específico por id
 
 El sistema implementa una **Arquitectura de Retriever Persistente** con observabilidad comprehensiva y gestión inteligente de ciclo de vida:
 
-### **Pipeline Avanzado con Retrievers Persistentes** (Arquitectura Modernizada)
-- **Persistent Retriever Management**: Gestión inteligente de retrievers con conexiones persistentes
-- **Comprehensive Observability**: Prometheus metrics, distributed tracing, structured logging
-- **Environment-Aware Processing**: Configuración automática según ambiente (dev/staging/prod)
-- **Health Monitoring**: Monitoreo continuo de salud de componentes y dependencias
-- **Background Processing**: Procesamiento asíncrono de metadatos y métricas
-- **Connection Pooling**: Gestión optimizada de conexiones a servicios externos
-- **Error Recovery**: Recuperación automática y fallback inteligente
-- **Performance Optimization**: Optimizaciones adaptativas según carga y ambiente
+## 2. EnsembleRetriever - Arquitectura de 5 Retrievers
+
+El sistema utiliza un **EnsembleRetriever** que combina 5 retrievers especializados con pesos optimizados:
+
+### **Retrievers del Ensemble** (rag_service.py:207-263)
+
+#### **1. Base Vector Retriever** (Weight: 0.1)
+- **Función**: Búsqueda vectorial básica en Milvus
+- **Implementación**: `vector_store.as_retriever(search_kwargs={"k": top_k})`
+- **Optimización**: Embedding caching y connection pooling
+
+#### **2. Parent Document Retriever** (Weight: 0.3) - PESO MAYOR
+- **Función**: Recuperación jerárquica de documentos padre
+- **Implementación**: `ParentDocumentRetriever` con MongoDB store
+- **Ventaja**: Contexto más rico con documentos completos
+
+#### **3. Multi-Query Retriever** (Weight: 0.4) - PESO DOMINANTE
+- **Función**: Genera múltiples variaciones de la query
+- **Implementación**: `GlossaryAwareMultiQueryRetriever` con 5 variaciones
+- **Optimización**: Glossary-aware query generation
+
+#### **4. HyDE Retriever** (Weight: 0.1)
+- **Función**: Hypothetical Document Embedder
+- **Implementación**: `GlossaryAwareHyDEEmbedder` con Azure OpenAI
+- **Técnica**: Genera documento hipotético, luego busca similares
+
+#### **5. BM25 Retriever** (Weight: 0.1)
+- **Función**: Búsqueda por palabras clave TF-IDF
+- **Implementación**: `BM25Retriever.from_documents()`
+- **Complemento**: Keyword matching para términos específicos
+
+### **Weight Normalization** (rag_service.py:216-261)
+```python
+# Pesos configurables y normalizados
+base_weight = settings.RETRIEVER_WEIGHTS_BASE (0.1)
+parent_weight = settings.RETRIEVER_WEIGHTS_PARENT (0.3)
+multi_query_weight = settings.RETRIEVER_WEIGHTS_MULTI_QUERY (0.4)
+hyde_weight = settings.RETRIEVER_WEIGHTS_HYDE (0.1)
+bm25_weight = settings.RETRIEVER_WEIGHTS_BM25 (0.1)
+
+# Total normalizado = 1.0
+```
 
 ## 3. Procesos Principales del Pipeline con Arquitectura Persistente
 
@@ -58,102 +129,123 @@ El sistema implementa una **Arquitectura de Retriever Persistente** con observab
    - **Environment Optimization**: Configuración automática según ambiente
    - **Error Handling**: Manejo robusto con fallback automático
 
-### **Pipeline Avanzado con Observabilidad (`process_query`)**
+## 3. Detalle Técnico del Pipeline Asíncrono
 
-#### **Fase 3: Cache Inteligente con Métricas** (`query_optimizer.py`)
+### **Fase 3: Parallel Retrieval Implementation** (rag_service.py:1348-1399)
+
+#### **Task Creation y Coordination**
 ```python
-# CACHE AVANZADO CON OBSERVABILIDAD
-- Cache check con distributed tracing
-- Semantic similarity con métricas de hit rate
-- Content integrity validation con alerting
-- Background cache maintenance con logging
+# Creación de tareas de retrieval paralelas
+retrieval_tasks = [
+    retrieve_context_without_reranking(original_query, retriever, chat_history),
+    retrieve_context_without_reranking(step_back_query, retriever, chat_history),
+    # Multi-queries (hasta 3 adicionales)
+]
+
+# Ejecución paralela con timeout
+retrieval_results = await asyncio.wait_for(
+    asyncio.gather(*retrieval_tasks, return_exceptions=True),
+    timeout=settings.RETRIEVAL_TASK_TIMEOUT
+)
 ```
 
-#### **Fase 4: Query Processing con Telemetría** (`rag_service.py`)
-```python  
-# QUERY ENHANCEMENT CON MÉTRICAS
-- Query variations generation con performance tracking
-- Glossary integration con timing metrics
-- Parallel processing con span tracking
-- Error handling con automatic recovery
+#### **Result Processing y Error Handling**
+```python
+# Función helper para extraer resultados válidos
+def _extract_valid_results(results, task_descriptions):
+    valid_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.warning(f"Task '{task_descriptions[i]}' failed: {result}")
+            continue
+        if result is not None:
+            valid_results.append(result)
+    return valid_results
 ```
 
-#### **Fase 5: Persistent Retrieval con Observabilidad** (`rag_service.py`)
+### **Fase 4: Document Consolidation** (rag_service.py:1404-1439)
+
+#### **Deduplication Algorithm**
 ```python
-# RETRIEVAL CON RETRIEVERS PERSISTENTES
-- Persistent retriever health validation
-- Parallel retrieval con distributed tracing
-- Connection pool metrics collection
-- Performance optimization con auto-tuning
-- Background metrics collection
+all_retrieved_docs = []
+seen_contents = set()
+
+for result in valid_retrieval_results:
+    for document in result:
+        content_hash = hash(document.page_content)
+        if content_hash not in seen_contents:
+            seen_contents.add(content_hash)
+            all_retrieved_docs.append(document)
 ```
 
-#### **Fase 6: Advanced Reranking con Metrics** (`rag_service.py`)
-```python
-# RERANKING CON TELEMETRÍA COMPLETA
-- Document consolidation con performance tracking
-- Cohere reranking con API metrics
-- Relevance scoring con quality metrics
-- Result optimization con effectiveness tracking
-```
+### **Fase 5: Context Preparation Tasks** (rag_service.py:1481-1597)
 
-#### **Fase 7: Context Preparation con Observability** (`rag_service.py`)
+#### **Parallel Context y Prompt Preparation**
 ```python
-# CONTEXT BUILDING CON MONITORING
-- Context assembly con size metrics
-- Template preparation con performance tracking
-- Quality validation con content metrics
-- Prompt optimization con effectiveness measurement
-```
+# Task 1: Context preparation
+async def context_preparation_task():
+    filtered_context = []
+    sources = []
+    # Sort by reranking score
+    reranked_docs.sort(key=lambda x: x.metadata.get('reranking_score', 0), reverse=True)
+    # Select top MAX_CHUNKS_LLM documents
+    for document in reranked_docs[:settings.MAX_CHUNKS_LLM]:
+        # Process document and extract source info
 
-#### **Fase 8: LLM Generation con Comprehensive Telemetry** (`rag_service.py`)
-```python
-# LLM PROCESSING CON OBSERVABILIDAD COMPLETA
-- Azure OpenAI calls con API metrics
-- Response generation con latency tracking
-- Quality validation con content analysis
-- Cache storage con integrity validation
-- Complete performance metrics logging
+# Task 2: Prompt preparation  
+async def prompt_preparation_task():
+    if matching_terms:
+        # Template with glossary
+    else:
+        # Standard template
+
+# Parallel execution
+phase5_results = await asyncio.gather(
+    context_preparation_task(),
+    prompt_preparation_task(),
+    return_exceptions=True
+)
 ```
 
 ## 4. Componentes de la Arquitectura Persistente
 
-### **A. Persistent Retriever Management**
-- `RetrieverManager` en `retriever_manager.py` - Gestión inteligente de ciclo de vida de retrievers
-- `PersistentRetrieverHealth` - Monitoreo continuo de salud de retrievers
-- `initialize_persistent_retrievers()` - Inicialización optimizada con connection pooling
-- `validate_retriever_health()` - Validación automática de salud y recuperación
+## 4. Componentes de Soporte del Pipeline
 
-### **B. Comprehensive Observability System**
-- `ObservabilityManager` en `observability.py` - Sistema completo de observabilidad
-- `PrometheusMetrics` - Métricas comprehensivas para Prometheus
-- `DistributedTracing` - Sistema de tracing distribuido
-- `StructuredLogger` - Logging JSON estructurado
-- `AlertManager` - Sistema de alerting automático
+### **A. Async Metadata Processor** (async_metadata_processor.py)
+- **Background Logging**: Procesamiento no bloqueante de logs y métricas
+- **Event Queue**: Cola asíncrona para eventos con priorización
+- **Batch Processing**: Agrupación eficiente de operaciones similares
+- **Performance Tracking**: Métricas de rendimiento sin impacto en requests
 
-### **C. Environment-Aware Configuration**
-- `EnvironmentManager` en `environment_manager.py` - Gestión inteligente de configuración por ambiente
-- `Environment` enum - Perfiles de ambiente (dev/staging/prod)
-- `apply_environment_optimizations()` - Optimizaciones automáticas por ambiente
-- `validate_deployment_readiness()` - Validación de readiness para deployment
+### **B. Metrics Manager** (metrics_manager.py)
+- **RAG Query Tracking**: `log_rag_query()` con timing completo
+- **Retriever Effectiveness**: `log_retriever_effectiveness()` por tipo
+- **Operation Metrics**: `log_operation()` para cada fase del pipeline
+- **API Call Tracking**: `log_api_call()` para servicios externos
 
-### **D. Advanced Query Processing**
-- `process_query()` en `rag_service.py` - Pipeline principal con observabilidad
-- `QueryOptimizer` en `query_optimizer.py` - Optimización avanzada con métricas
-- `SemanticCache` - Cache inteligente con similarity matching
-- `BackgroundProcessor` - Procesamiento asíncrono no bloqueante
+### **C. Coroutine Manager** (coroutine_manager.py)
+- **Task Coordination**: `gather_coroutines()` para ejecución paralela
+- **Timeout Management**: Control de timeouts por operación
+- **Error Handling**: Manejo robusto de exceptions y cancellations
+- **Resource Cleanup**: `cleanup()` automático de recursos
 
-### **E. Persistent Connection Management**
-- `EmbeddingManager` en `embedding_manager.py` - Gestión centralizada de embeddings
-- `ConnectionPoolManager` - Pools de conexiones para servicios externos
-- `HealthCheckManager` - Validación continua de conexiones
-- `RetryManager` - Lógica de retry inteligente
+### **D. Query Optimizer** (query_optimizer.py)
+- **Cache Management**: Exact y semantic similarity matching
+- **Embedding Storage**: Persistent query embeddings
+- **Quality Validation**: Content integrity checking
+- **Background Cleanup**: Automatic cache maintenance
 
-### **F. Production-Ready Features**
-- `MetricsManager` en `metrics_manager.py` - Gestión comprehensiva de métricas
-- `CoroutineManager` en `coroutine_manager.py` - Gestión avanzada de corrutinas
-- `AsyncMetadataProcessor` - Procesamiento asíncrono de metadatos
-- `BackgroundTaskManager` - Gestión de tareas de mantenimiento
+### **E. EnsembleRetriever Configuration**
+- **Weight Management**: Configuración de pesos por retriever type
+- **Dynamic Assembly**: Construcción automática basada en disponibilidad
+- **Health Validation**: Verificación de cada retriever antes de uso
+- **Performance Optimization**: Conexiones persistentes y caching
+
+### **F. Pipeline Metrics y Observability**
+- **Phase Timing**: Medición precisa de cada una de las 6 fases
+- **Retriever Metrics**: Performance individual de cada retriever
+- **Error Tracking**: Manejo y registro de errores por componente
+- **Background Processing**: Logging asíncrono no bloqueante
 
 ## 5. Estado de Implementación de Arquitectura Persistente
 
@@ -367,11 +459,122 @@ METRICS_COLLECTION_INTERVAL = 30
 - **Background Task Metrics**: Duration, success rate, queue size
 - **Health Metrics**: Component health, dependency status
 
-## 9. 🎯 **Resumen: Arquitectura Persistente Completamente Implementada**
+## 5. Sistema de Métricas para Fases y Retrievers
 
-### **Transformación Arquitectural Completa Lograda**
+### **Métricas de Pipeline Timing** (rag_service.py:1675-1691)
 
-La implementación de la **Arquitectura de Retriever Persistente** representa una evolución completa del sistema RAG hacia production-readiness:
+```python
+# Pipeline metrics con breakdown por fase
+pipeline_metrics = {
+    'phase1_time': phase1_time,  # Cache optimization
+    'phase2_time': phase2_time,  # Query generation
+    'phase3_time': phase3_time,  # Parallel retrieval
+    'phase4_time': phase4_time,  # Processing/reranking
+    'phase5_time': phase5_time,  # Response preparation
+    'phase6_time': phase6_time,  # LLM generation
+    'total_time': total_processing_time
+}
+```
+
+### **Métricas por Retriever Individual**
+
+#### **Implementación Sugerida en metrics_manager.py:**
+```python
+def log_retriever_performance(self, retriever_type: str, query: str, 
+                              execution_time: float, documents_found: int,
+                              success: bool, error_details: str = None):
+    """
+    Registra performance individual de cada retriever.
+    
+    Args:
+        retriever_type: 'base_vector', 'parent_doc', 'multi_query', 'hyde', 'bm25'
+        query: Query procesada por el retriever
+        execution_time: Tiempo de ejecución en segundos
+        documents_found: Número de documentos recuperados
+        success: Si la operación fue exitosa
+        error_details: Detalles del error si falló
+    """
+    self.metrics['retriever_performance'][retriever_type].append({
+        'timestamp': datetime.now().isoformat(),
+        'execution_time': execution_time,
+        'documents_found': documents_found,
+        'success': success,
+        'error_details': error_details,
+        'query_preview': query[:50] + '...' if len(query) > 50 else query
+    })
+```
+
+#### **Instrumentación en RAGService.get_retriever():**
+```python
+# Para cada retriever en el ensemble
+for retriever_type, retriever_instance in retrievers.items():
+    start_time = time.time()
+    try:
+        documents = await retriever_instance.retrieve(query)
+        execution_time = time.time() - start_time
+        
+        # Log performance
+        self.metrics_manager.log_retriever_performance(
+            retriever_type=retriever_type,
+            query=query,
+            execution_time=execution_time,
+            documents_found=len(documents),
+            success=True
+        )
+    except Exception as e:
+        execution_time = time.time() - start_time
+        self.metrics_manager.log_retriever_performance(
+            retriever_type=retriever_type,
+            query=query,
+            execution_time=execution_time,
+            documents_found=0,
+            success=False,
+            error_details=str(e)
+        )
+```
+
+### **Dashboard Metrics Export**
+
+#### **Prometheus Metrics Sugeridas:**
+```python
+# Métricas por fase del pipeline
+PIPELINE_PHASE_DURATION = Histogram(
+    'rag_pipeline_phase_duration_seconds',
+    'Duration of each pipeline phase',
+    ['phase', 'collection']
+)
+
+# Métricas por retriever
+RETRIEVER_DURATION = Histogram(
+    'rag_retriever_duration_seconds',
+    'Duration of individual retriever operations',
+    ['retriever_type', 'collection']
+)
+
+RETRIEVER_DOCUMENTS_FOUND = Histogram(
+    'rag_retriever_documents_found',
+    'Number of documents found by each retriever',
+    ['retriever_type', 'collection']
+)
+
+RETRIEVER_SUCCESS_RATE = Counter(
+    'rag_retriever_operations_total',
+    'Total retriever operations',
+    ['retriever_type', 'status']  # status: success/error
+)
+```
+
+### **Logging Configuration**
+
+```python
+# En async_metadata_processor.py - Agregar tipo de evento
+class MetadataType(Enum):
+    PIPELINE_PHASE = "pipeline_phase"
+    RETRIEVER_PERFORMANCE = "retriever_performance"
+    # ... otros tipos existentes
+```
+
+## 6. 🎯 **Resumen: Pipeline de 6 Fases con EnsembleRetriever**
 
 #### **✅ Arquitectura Persistente - Todas las Fases Implementadas**
 1. **Core Services Refactoring**: Sistema de servicios centralizados con connection pooling
@@ -428,4 +631,18 @@ El sistema **RAG con Arquitectura Persistente** es ahora una solución completam
 6. **Mantiene performance optimizado** con 70-80% mejora
 7. **Ofrece monitoring y alerting** 24/7 automático
 
-**🎉 La Arquitectura de Retriever Persistente está COMPLETAMENTE IMPLEMENTADA y el sistema está PRODUCTION-READY.**
+**🎉 El Pipeline de 6 Fases con EnsembleRetriever de 5 Retrievers está COMPLETAMENTE IMPLEMENTADO y optimizado.**
+
+### **Flujo Final Optimizado:**
+```
+Query → Fase 1 (Cache + Validation) → Fase 2 (Query Generation) → 
+Fase 3 (5 Retrievers Paralelos) → Fase 4 (Reranking) → 
+Fase 5 (Context Prep) → Fase 6 (LLM Generation) → Response + Metrics
+```
+
+### **Performance Benefits:**
+- ✅ **5 Retrievers Paralelos**: Máximo recall con diversidad de estrategias
+- ✅ **Pipeline Asíncrono**: Procesamiento no bloqueante en 6 fases
+- ✅ **Intelligent Weighting**: Pesos optimizados (Multi-Query: 40%, Parent: 30%)
+- ✅ **Comprehensive Metrics**: Timing detallado por fase y retriever
+- ✅ **Error Resilience**: Graceful degradation y fallback automático
