@@ -17,8 +17,44 @@ from pymilvus import utility
 
 router = APIRouter()
 
-# Create RAG service
+# Create traditional RAG service as fallback
 rag_service = create_rag_service(llm_service)
+
+
+def get_persistent_rag_service(request: Request):
+    """
+    Get the PersistentRAGService from the application state.
+    Returns None if not available (fallback to traditional service).
+    """
+    try:
+        if hasattr(request.app.state, 'persistent_rag_service'):
+            return request.app.state.persistent_rag_service
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get persistent RAG service: {e}")
+        return None
+
+
+def determine_service_mode(persistent_service, startup_status):
+    """
+    Determine which service mode to use based on availability and health.
+    """
+    if not persistent_service:
+        return "fallback", "No persistent service available"
+    
+    if not startup_status:
+        return "fallback", "No startup status available"
+    
+    startup_mode = startup_status.get("startup_mode", "basic")
+    
+    if startup_mode == "full" and startup_status.get("persistent_rag_service", False):
+        return "persistent_full", "Persistent service with full features"
+    elif startup_mode == "degraded" and startup_status.get("persistent_rag_service", False):
+        return "persistent_degraded", "Persistent service with reduced features"
+    elif startup_mode in ["degraded", "basic"]:
+        return "fallback", f"Startup mode is {startup_mode}"
+    else:
+        return "fallback", "Unknown startup mode"
 
 
 @router.post("/chat", response_model=ChatResponse, summary="Chat with RAG")
@@ -136,62 +172,149 @@ async def chat(
         
         async_metadata_processor.log_async("DEBUG", "Formatted chat history", {"history_exchanges": len(chat_history)})
         
-        # Ensure RAG service is initialized
-        logger.debug("Ensuring RAG service is initialized")
-        try:
-            await rag_service.ensure_initialized()
-            logger.debug("RAG service initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize RAG service: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="RAG service initialization failed. Please try again later."
-            )
+        # Phase 3.2: Use Persistent RAG Service when available
+        collection_name_to_use = collection_name or settings.COLLECTION_NAME
+        logger.info(f"Using collection: {collection_name_to_use}")
         
-        # Initialize retrievers in parallel for better performance
-        logger.debug("Initializing retrievers in parallel using optimized method")
-        try:
-            collection_name_to_use = collection_name or settings.COLLECTION_NAME
-            logger.info(f"Using collection: {collection_name_to_use}")
-            
-            # Get unified retriever for the collection
-            retriever = await rag_service.get_retriever(collection_name_to_use, settings.MAX_CHUNKS_CONSIDERED)
-            
-            if not retriever:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Collection '{collection_name_to_use}' not found. Please upload documents first."
-                )
-            
-            logger.info(f"Successfully initialized retriever for collection: {collection_name_to_use}")
-        except Exception as e:
-            logger.error(f"Failed to initialize retrievers: {e}")
-            ERROR_COUNTER.labels(error_type="RetrievalError", component="embeddings").inc()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to initialize retrieval models. Please try again later."
-            )
+        # Get persistent RAG service and determine service mode
+        persistent_service = get_persistent_rag_service(request)
+        startup_status = getattr(request.app.state, 'startup_status', None)
+        service_mode, mode_reason = determine_service_mode(persistent_service, startup_status)
         
-        # Process query with RAG service
-        logger.debug("Processing query with RAG service")
-        try:
-            # Process query with unified retriever
-            logger.info("Processing query with unified retriever")
+        logger.info(f"Service mode determined: {service_mode} - {mode_reason}")
+        async_metadata_processor.log_async("INFO", 
+            "Chat request service mode determined",
+            {
+                "service_mode": service_mode,
+                "reason": mode_reason,
+                "collection": collection_name_to_use,
+                "persistent_service_available": persistent_service is not None
+            })
+        
+        retriever = None
+        service_to_use = None
+        
+        if service_mode.startswith("persistent"):
+            # Use persistent RAG service
             try:
-                result = await asyncio.wait_for(
-                    rag_service.process_query(
-                        user_query,
-                        retriever,
-                        chat_history
-                    ),
-                    timeout=settings.CHAT_REQUEST_TIMEOUT
+                logger.debug("Using persistent RAG service for retriever...")
+                
+                # Get persistent retriever with priority based on service mode
+                priority = 1 if service_mode == "persistent_full" else 2
+                retriever = await persistent_service.get_persistent_retriever(
+                    collection_name_to_use, 
+                    settings.MAX_CHUNKS_CONSIDERED,
+                    priority=priority
                 )
-            except asyncio.TimeoutError:
-                logger.error(f"Chat request timed out after {settings.CHAT_REQUEST_TIMEOUT} seconds")
+                
+                if retriever:
+                    service_to_use = persistent_service
+                    logger.info(f"✓ Successfully obtained persistent retriever for collection: {collection_name_to_use}")
+                    
+                    async_metadata_processor.log_async("INFO", 
+                        "Using persistent retriever",
+                        {
+                            "collection": collection_name_to_use,
+                            "service_mode": service_mode,
+                            "priority": priority
+                        })
+                else:
+                    logger.warning("Persistent service failed to provide retriever, falling back...")
+                    service_mode = "fallback"
+                    
+            except Exception as e:
+                logger.error(f"Error getting persistent retriever: {e}")
+                # Enhanced error handling with circuit breaker concept for resilience
+                async_metadata_processor.log_async("ERROR", 
+                    "Failed to get persistent retriever",
+                    {
+                        "error": str(e),
+                        "collection": collection_name_to_use
+                    }, priority=3)
+                service_mode = "fallback"
+        
+        # Fallback to traditional RAG service if needed
+        if service_mode == "fallback" or not retriever:
+            logger.info("Using traditional RAG service as fallback...")
+            
+            try:
+                # Ensure traditional RAG service is initialized
+                await rag_service.ensure_initialized()
+                
+                # Get traditional retriever
+                retriever = await rag_service.get_retriever(collection_name_to_use, settings.MAX_CHUNKS_CONSIDERED)
+                service_to_use = rag_service
+                
+                if retriever:
+                    logger.info(f"✓ Successfully obtained traditional retriever for collection: {collection_name_to_use}")
+                    async_metadata_processor.log_async("INFO", 
+                        "Using traditional retriever as fallback",
+                        {"collection": collection_name_to_use})
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize traditional RAG service: {e}")
                 raise HTTPException(
-                    status_code=status.HTTP_408_REQUEST_TIMEOUT,
-                    detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="RAG service initialization failed. Please try again later."
                 )
+        
+        # Final validation
+        if not retriever:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection '{collection_name_to_use}' not found. Please upload documents first."
+            )
+        
+        # Process query with the selected service
+        logger.debug(f"Processing query with service: {type(service_to_use).__name__}")
+        try:
+            # Use persistent service method if available, otherwise use traditional method
+            if service_to_use == persistent_service and hasattr(persistent_service, 'process_query_with_persistent_retrievers'):
+                logger.info("Processing query with persistent RAG service")
+                try:
+                    result = await asyncio.wait_for(
+                        persistent_service.process_query_with_persistent_retrievers(
+                            user_query,
+                            collection_name_to_use,
+                            chat_history,
+                            settings.MAX_CHUNKS_CONSIDERED
+                        ),
+                        timeout=settings.CHAT_REQUEST_TIMEOUT
+                    )
+                    
+                    # Add service mode info to result
+                    result['service_mode'] = service_mode
+                    result['using_persistent_service'] = True
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Persistent RAG request timed out after {settings.CHAT_REQUEST_TIMEOUT} seconds")
+                    raise HTTPException(
+                        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                        detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
+                    )
+            else:
+                # Use traditional RAG service
+                logger.info("Processing query with traditional RAG service")
+                try:
+                    result = await asyncio.wait_for(
+                        rag_service.process_query(
+                            user_query,
+                            retriever,
+                            chat_history
+                        ),
+                        timeout=settings.CHAT_REQUEST_TIMEOUT
+                    )
+                    
+                    # Add service mode info to result
+                    result['service_mode'] = 'fallback'
+                    result['using_persistent_service'] = False
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Traditional RAG request timed out after {settings.CHAT_REQUEST_TIMEOUT} seconds")
+                    raise HTTPException(
+                        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                        detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
+                    )
             
             # Log pipeline metrics if available
             if 'pipeline_metrics' in result and settings.ASYNC_PIPELINE_PHASE_LOGGING:
@@ -244,6 +367,8 @@ async def chat(
         sources = result.get('sources', [])
         from_cache = result.get('from_cache', False)
         documents = result.get('documents', [])
+        using_persistent_service = result.get('using_persistent_service', False)
+        result_service_mode = result.get('service_mode', 'unknown')
         
         if not response:
             async_metadata_processor.log_async("WARNING", "RAG service returned empty response", priority=2)
@@ -258,7 +383,13 @@ async def chat(
             documents=documents if return_documents else None
         )
         
-        async_metadata_processor.log_async("DEBUG", "Response generated successfully", {"processing_time": processing_time, "sources_count": len(sources), "from_cache": from_cache})
+        async_metadata_processor.log_async("DEBUG", "Response generated successfully", {
+            "processing_time": processing_time, 
+            "sources_count": len(sources), 
+            "from_cache": from_cache,
+            "service_mode": result_service_mode,
+            "using_persistent_service": using_persistent_service
+        })
         
         # Update metrics asíncronamente
         async_metadata_processor.record_metric_async(
@@ -276,7 +407,10 @@ async def chat(
             {
                 "from_cache": from_cache,
                 "sources_count": len(sources),
-                "query_length": len(user_query)
+                "query_length": len(user_query),
+                "service_mode": result_service_mode,
+                "using_persistent_service": using_persistent_service,
+                "collection": collection_name_to_use
             }
         )
         

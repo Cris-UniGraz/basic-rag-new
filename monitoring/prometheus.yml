@@ -1,0 +1,104 @@
+# Prometheus configuration for RAG API monitoring
+# Production-ready configuration with comprehensive scraping rules
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'rag-api-cluster'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Rule files
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # RAG API Backend
+  - job_name: 'rag-api-backend'
+    static_configs:
+      - targets: ['backend:8080']  # Prometheus metrics port
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+    honor_labels: true
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'rag-api-backend'
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'rag-api'
+
+  # System metrics (Node Exporter - optional)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    honor_labels: true
+
+  # MongoDB metrics (MongoDB Exporter - optional)
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongodb-exporter:9216']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    params:
+      collect[]:
+        - database
+        - collection
+        - topmetrics
+        - indexusage
+
+  # Redis metrics (Redis Exporter - optional)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Milvus metrics (if exposed)
+  - job_name: 'milvus'
+    static_configs:
+      - targets: ['milvus:9091']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    honor_labels: true
+
+  # Container metrics (cAdvisor - optional)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    honor_labels: true
+
+# Remote write configuration (for long-term storage)
+# remote_write:
+#   - url: "http://prometheus-remote-storage:9201/api/v1/write"
+#     queue_config:
+#       max_samples_per_send: 1000
+#       max_shards: 200
+#       capacity: 2500
+
+# Storage configuration
+storage:
+  tsdb:
+    retention.time: 30d
+    retention.size: 10GB
+    wal-compression: true

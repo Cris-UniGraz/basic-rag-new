@@ -1,0 +1,218 @@
+# Prometheus alerting rules for RAG API
+# Comprehensive alerts for production monitoring
+
+groups:
+  - name: rag_api_alerts
+    interval: 30s
+    rules:
+      # API Health Alerts
+      - alert: HighErrorRate
+        expr: (rate(rag_api_requests_total{status_code=~"5.."}[5m]) / rate(rag_api_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          service: rag-api
+        annotations:
+          summary: "High error rate detected"
+          description: "API error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(rag_api_request_duration_seconds_bucket[5m])) > 10
+        for: 3m
+        labels:
+          severity: warning
+          service: rag-api
+        annotations:
+          summary: "High API response time"
+          description: "95th percentile response time is {{ $value }}s over the last 5 minutes"
+
+      - alert: APIDown
+        expr: up{job="rag-api-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: rag-api
+        annotations:
+          summary: "RAG API is down"
+          description: "RAG API backend has been down for more than 1 minute"
+
+      # Retriever Performance Alerts
+      - alert: SlowRetrieverOperations
+        expr: histogram_quantile(0.95, rate(rag_retriever_duration_seconds_bucket[5m])) > 5
+        for: 3m
+        labels:
+          severity: warning
+          service: rag-api
+          component: retriever
+        annotations:
+          summary: "Slow retriever operations"
+          description: "95th percentile retriever operation time is {{ $value }}s for collection {{ $labels.collection }}"
+
+      - alert: HighRetrieverErrorRate
+        expr: (rate(rag_retriever_operations_total{status="error"}[5m]) / rate(rag_retriever_operations_total[5m])) > 0.10
+        for: 2m
+        labels:
+          severity: warning
+          service: rag-api
+          component: retriever
+        annotations:
+          summary: "High retriever error rate"
+          description: "Retriever error rate is {{ $value | humanizePercentage }} for collection {{ $labels.collection }}"
+
+      # System Resource Alerts
+      - alert: HighCPUUsage
+        expr: rag_system_cpu_usage_percent > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: rag-api
+          component: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% for more than 5 minutes"
+
+      - alert: HighMemoryUsage
+        expr: (rag_system_memory_usage_bytes{type="used"} / rag_system_memory_usage_bytes{type="total"}) * 100 > 90
+        for: 3m
+        labels:
+          severity: critical
+          service: rag-api
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}% for more than 3 minutes"
+
+      - alert: HighDiskUsage
+        expr: (rag_system_disk_usage_bytes{type="used"} / rag_system_disk_usage_bytes{type="total"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: rag-api
+          component: system
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is {{ $value }}% on {{ $labels.path }}"
+
+      # Connection Pool Alerts
+      - alert: ConnectionPoolExhausted
+        expr: rag_connection_pool_active / rag_connection_pool_total > 0.95
+        for: 2m
+        labels:
+          severity: warning
+          service: rag-api
+          component: connection_pool
+        annotations:
+          summary: "Connection pool nearly exhausted"
+          description: "Connection pool {{ $labels.pool_name }} is {{ $value | humanizePercentage }} full"
+
+      - alert: HighConnectionPoolErrors
+        expr: rate(rag_connection_pool_operations_total{status="error"}[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+          service: rag-api
+          component: connection_pool
+        annotations:
+          summary: "High connection pool error rate"
+          description: "Connection pool {{ $labels.pool_name }} has {{ $value }} errors per second"
+
+      # Cache Performance Alerts
+      - alert: LowCacheHitRate
+        expr: rag_cache_hit_rate < 0.7
+        for: 5m
+        labels:
+          severity: warning
+          service: rag-api
+          component: cache
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }} for {{ $labels.cache_level }} cache"
+
+      - alert: HighCacheSize
+        expr: rag_cache_size_bytes > 1000000000  # 1GB
+        for: 5m
+        labels:
+          severity: warning
+          service: rag-api
+          component: cache
+        annotations:
+          summary: "High cache size"
+          description: "{{ $labels.cache_level }} cache size is {{ $value | humanizeBytes }}"
+
+      # Background Task Alerts
+      - alert: BackgroundTaskFailures
+        expr: rate(rag_background_tasks_total{status="failed"}[10m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: rag-api
+          component: background_tasks
+        annotations:
+          summary: "Background task failures"
+          description: "Background tasks of type {{ $labels.task_type }} are failing at {{ $value }} per second"
+
+      - alert: LongRunningBackgroundTasks
+        expr: rag_background_task_duration_seconds > 3600  # 1 hour
+        for: 1m
+        labels:
+          severity: warning
+          service: rag-api
+          component: background_tasks
+        annotations:
+          summary: "Long running background task"
+          description: "Background task {{ $labels.task_type }} has been running for {{ $value | humanizeDuration }}"
+
+  - name: infrastructure_alerts
+    interval: 60s
+    rules:
+      # Database Alerts
+      - alert: MongoDBDown
+        expr: up{job="mongodb"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: mongodb
+        annotations:
+          summary: "MongoDB is down"
+          description: "MongoDB has been down for more than 1 minute"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been down for more than 1 minute"
+
+      - alert: MilvusDown
+        expr: up{job="milvus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: milvus
+        annotations:
+          summary: "Milvus is down"
+          description: "Milvus has been down for more than 1 minute"
+
+      # Container Resource Alerts
+      - alert: ContainerHighMemoryUsage
+        expr: (container_memory_working_set_bytes / container_spec_memory_limit_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.name }}"
+        annotations:
+          summary: "Container high memory usage"
+          description: "Container {{ $labels.name }} memory usage is {{ $value }}%"
+
+      - alert: ContainerHighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total[5m]) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.name }}"
+        annotations:
+          summary: "Container high CPU usage"
+          description: "Container {{ $labels.name }} CPU usage is {{ $value }}%"

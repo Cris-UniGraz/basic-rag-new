@@ -1,0 +1,247 @@
+# Multi-stage Dockerfile optimized for production deployment
+# This Dockerfile implements best practices for production deployments including:
+# - Multi-stage builds for smaller image size
+# - Security optimizations
+# - Health checks
+# - Resource optimization
+# - Proper logging configuration
+
+# =============================================================================
+# Stage 1: Build Stage
+# =============================================================================
+FROM python:3.10-slim as builder
+
+# Build arguments for optimization
+ARG ENVIRONMENT=production
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+# Set build-time environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PIP_DEFAULT_TIMEOUT=100
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libffi-dev \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create and use a non-root user for building
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
+
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies in a virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
+# =============================================================================
+# Stage 2: Production Runtime Stage
+# =============================================================================
+FROM python:3.10-slim as production
+
+# Build arguments
+ARG ENVIRONMENT=production
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+# Labels for metadata
+LABEL maintainer="RAG Team" \
+      version="${VERSION}" \
+      environment="${ENVIRONMENT}" \
+      build-date="${BUILD_DATE}" \
+      vcs-ref="${VCS_REF}" \
+      description="Production-optimized RAG API backend"
+
+# Set production environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1 \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    ENVIRONMENT=production \
+    PRODUCTION_MODE=true \
+    DEBUG_MODE=false
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user for security
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
+
+# Copy virtual environment from builder stage
+COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
+
+# Create application directories with proper permissions
+RUN mkdir -p /app/data/documents \
+             /app/logs \
+             /app/backups \
+             /app/temp \
+             /tmp/rag_cache && \
+    chown -R appuser:appuser /app /tmp/rag_cache
+
+WORKDIR /app
+
+# Copy application code with proper ownership
+COPY --chown=appuser:appuser . .
+
+# Create startup script
+COPY --chown=appuser:appuser <<EOF /app/startup.sh
+#!/bin/bash
+set -e
+
+echo "Starting RAG API in production mode..."
+echo "Environment: \${ENVIRONMENT}"
+echo "Build Date: ${BUILD_DATE}"
+echo "Version: ${VERSION}"
+
+# Validate environment
+python -c "
+from app.core.environment_manager import check_deployment_readiness, get_environment_summary
+print('Environment Summary:')
+print(get_environment_summary())
+print()
+readiness = check_deployment_readiness()
+if not readiness['ready']:
+    print('❌ Environment validation failed!')
+    for issue in readiness['issues']:
+        print(f'  - {issue}')
+    exit(1)
+else:
+    print('✅ Environment validation passed!')
+"
+
+# Apply environment optimizations
+python -c "
+from app.core.environment_manager import apply_environment_optimizations
+apply_environment_optimizations()
+print('Applied environment optimizations')
+"
+
+# Start the application
+exec uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 4 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --access-log \
+    --log-level info \
+    --no-use-colors
+EOF
+
+RUN chmod +x /app/startup.sh
+
+# Create health check script
+COPY --chown=appuser:appuser <<EOF /app/healthcheck.sh
+#!/bin/bash
+set -e
+
+# Basic health check
+curl -f http://localhost:8000/health || exit 1
+
+# Detailed health check for production
+if [ "\${ENVIRONMENT}" = "production" ]; then
+    # Check if all components are healthy
+    response=\$(curl -s http://localhost:8000/health/detailed || echo '{"status":"unhealthy"}')
+    
+    # Parse JSON response and check status
+    status=\$(echo "\$response" | python -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('status', 'unknown'))
+except:
+    print('unhealthy')
+")
+    
+    if [ "\$status" != "healthy" ]; then
+        echo "Detailed health check failed: \$status"
+        exit 1
+    fi
+fi
+
+echo "Health check passed"
+EOF
+
+RUN chmod +x /app/healthcheck.sh
+
+# Switch to non-root user
+USER appuser
+
+# Configure health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD ["/app/healthcheck.sh"]
+
+# Expose application port
+EXPOSE 8000
+
+# Use tini as PID 1 for proper signal handling
+ENTRYPOINT ["tini", "--"]
+
+# Default command
+CMD ["/app/startup.sh"]
+
+# =============================================================================
+# Stage 3: Development Stage (Optional)
+# =============================================================================
+FROM production as development
+
+# Switch back to root for package installation
+USER root
+
+# Install development dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    vim \
+    less \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set development environment variables
+ENV ENVIRONMENT=development \
+    PRODUCTION_MODE=false \
+    DEBUG_MODE=true \
+    LOG_LEVEL=DEBUG
+
+# Create development startup script
+COPY --chown=appuser:appuser <<EOF /app/startup-dev.sh
+#!/bin/bash
+set -e
+
+echo "Starting RAG API in development mode..."
+
+# Start with hot reload
+exec uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --reload \
+    --reload-dir /app \
+    --log-level debug
+EOF
+
+RUN chmod +x /app/startup-dev.sh
+
+# Switch back to non-root user
+USER appuser
+
+# Override command for development
+CMD ["/app/startup-dev.sh"]

@@ -24,3 +24,8 @@ llama-parse
 pydantic
 filetype
 redis>=4.5.0
+psutil
+pydantic
+structlog
+prometheus_client
+pydantic-settings

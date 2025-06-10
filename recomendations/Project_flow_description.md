@@ -1,8 +1,8 @@
-# Project Flow Description - Basic RAG System (Unified Processing)
+# Project Flow Description - RAG System with Persistent Retriever Architecture
 
 ## Overview
 
-This document describes the internal flow of the Basic RAG (Retrieval Augmented Generation) system, which implements advanced techniques for document retrieval and response generation. The system has been **completely migrated** from language-specific processing to **unified multilingual processing**, eliminating language classification and using a single embedding model for all languages.
+This document describes the internal flow of the Advanced RAG (Retrieval Augmented Generation) system, featuring a **Persistent Retriever Architecture** with comprehensive observability, environment-specific configurations, and production-ready deployment capabilities. The system implements **unified multilingual processing** with advanced performance optimizations, background processing, and comprehensive monitoring.
 
 ## 🎯 **MIGRATION COMPLETED: Unified Document Processing**
 
@@ -14,45 +14,98 @@ The system has been **successfully migrated** from language-specific processing 
 - ✅ **Multilingual reranking**: `COHERE_RERANKING_MODEL=rerank-multilingual-v3.0`
 - ✅ **Simplified pipeline**: Single processing path for any language
 
-## System Architecture
+## System Architecture - Persistent Retriever Architecture
 
-The system is built as a containerized web application using FastAPI as the backend and Streamlit as the frontend. It uses **unified processing architecture**:
+The system is built as a production-ready containerized application featuring a **Persistent Retriever Architecture** with comprehensive observability and multi-environment support:
 
-- **Vector Database**: Milvus for storing unified document embeddings (single collection)
-- **Document Store**: MongoDB for storing parent documents (unified collection)
-- **Cache Layer**: Redis for unified query and response caching (no language differentiation)
-- **LLM Service**: Azure OpenAI GPT models (single model for all languages)
-- **Embedding Model**: Azure OpenAI text-embedding-ada-002 (unified for all languages)
-- **Reranking**: Cohere rerank-multilingual-v3.0 (single model for all languages)
-- **Asynchronous Processing**: Background metadata and metrics processing for non-blocking operations
+### **Core Components**
+- **Vector Database**: Milvus with persistent retrievers and connection pooling
+- **Document Store**: MongoDB with optimized indexes and connection management
+- **Cache Layer**: Advanced Redis caching with intelligent TTL and semantic similarity
+- **LLM Service**: Azure OpenAI GPT models with connection pooling and retry logic
+- **Embedding Service**: Azure OpenAI text-embedding-ada-002 with persistent connections
+- **Reranking Service**: Cohere rerank-multilingual-v3.0 with connection management
 
-## Asynchronous Metadata Processing Enhancement
+### **Advanced Features**
+- **Persistent Retriever Management**: Intelligent initialization, health monitoring, and lifecycle management
+- **Comprehensive Observability**: Prometheus metrics, distributed tracing, structured logging, and alerting
+- **Environment Configuration**: Production, staging, and development profiles with automatic optimization
+- **Background Processing**: Asynchronous metadata processing, metrics collection, and maintenance tasks
+- **Health Monitoring**: Real-time health checks, dependency monitoring, and automatic recovery
+- **Performance Optimization**: Connection pooling, caching strategies, and resource management
+- **Security Hardening**: Multi-stage Docker builds, non-root containers, and security scanning
+- **Deployment Automation**: Docker Compose production setup, automated deployments, and rollback capabilities
 
-### Background Processing System
-The system implements an `AsyncMetadataProcessor` that handles logging and metrics collection asynchronously to avoid blocking the main request thread:
+## Persistent Retriever Architecture Implementation
 
-#### Key Features
-- **Queue-based Processing**: Uses asyncio queues for non-blocking operations
-- **Priority Handling**: Critical events (errors) are processed with higher priority
-- **Batch Operations**: Groups similar operations for efficiency
-- **JSON Serialization**: Handles complex data types with automatic serialization
-- **Background Workers**: Dedicated coroutines process metadata without impacting response times
+### **Phase 1: Core Services Refactoring**
+The system implements a sophisticated retriever management system with intelligent lifecycle handling:
 
-#### Performance Benefits
-- **Reduced Latency**: Main request processing is not blocked by logging/metrics
-- **Better Throughput**: Higher concurrent request handling capacity
-- **Resource Optimization**: Background processing uses idle CPU cycles
-- **Improved User Experience**: Faster response times for user queries
+#### Core Services Components
+- **Embedding Manager**: Centralized embedding model management with connection pooling
+- **Coroutine Manager**: Advanced async operation management with error handling
+- **Query Optimizer**: Intelligent query processing with semantic caching
+- **Metrics Manager**: Comprehensive metrics collection and analysis
+- **Cache System**: Multi-level caching with TTL and semantic similarity
 
-## Main Query Processing Flow
+### **Phase 2: Retriever Management**
+Advanced retriever architecture with persistent connections and intelligent initialization:
 
-### 1. Query Reception and Validation (Unified)
+#### Retriever Management Features
+- **Persistent Retrievers**: Long-lived retriever instances with connection reuse
+- **Health Monitoring**: Continuous health checks and automatic recovery
+- **Intelligent Initialization**: Parallel initialization with dependency management
+- **Error Recovery**: Automatic retry logic and graceful degradation
+- **Performance Optimization**: Connection pooling and resource management
+
+### **Phase 3: Main App Integration**
+Seamless integration with the main application flow:
+
+#### Integration Features
+- **Unified Pipeline**: Single processing path with retriever management
+- **Error Handling**: Comprehensive error management and recovery
+- **Performance Monitoring**: Real-time performance tracking and optimization
+- **Resource Management**: Efficient resource utilization and cleanup
+
+### **Phase 4: Health Checks & Monitoring**
+Comprehensive health monitoring and observability:
+
+#### Health Check System
+- **Component Health**: Individual component health monitoring
+- **Dependency Checks**: External service dependency validation
+- **Performance Metrics**: Real-time performance and resource monitoring
+- **Alert System**: Automated alerting for critical issues
+
+### **Phase 5: Performance & Scaling**
+Advanced performance optimizations and scaling capabilities:
+
+#### Performance Features
+- **Background Processing**: Asynchronous metadata and metrics processing
+- **Connection Pooling**: Optimized connection management for all services
+- **Caching Strategies**: Multi-level intelligent caching
+- **Resource Optimization**: Efficient memory and CPU utilization
+
+### **Phase 6: Configuration & Deployment**
+Production-ready configuration and deployment automation:
+
+#### Deployment Features
+- **Environment Profiles**: Production, staging, and development configurations
+- **Docker Optimization**: Multi-stage builds with security hardening
+- **Observability Stack**: Prometheus, Grafana, alerting, and distributed tracing
+- **Automation**: Deployment scripts and health validation
+
+## Main Query Processing Flow with Persistent Retriever Architecture
+
+### 1. Request Reception and Observability (Production-Ready)
 - User submits a query through the frontend (Streamlit)
+- **Request Tracing**: Distributed tracing begins with unique trace ID
+- **Observability**: Prometheus metrics capture request start time
 - The query is sent to the FastAPI backend via `/api/chat` endpoint
+- **Environment-Aware Processing**: Configuration adapts based on environment (dev/staging/prod)
 - **UNIFIED PROCESSING**: No language parameter validation needed
 - Chat history is formatted from conversation messages
-- **Async Enhancement**: Request logging happens in background
-- **Language Detection**: System processes any language transparently
+- **Background Logging**: Structured logging with JSON format for observability
+- **Health Validation**: Automatic dependency health checks before processing
 
 ### 2. Cache Check Phase
 The system implements a sophisticated two-level caching mechanism with enhanced chunk content storage:
@@ -122,39 +175,50 @@ Using a single LLM call, the system generates:
 - Combines definitions: "German definition | EN: English definition"
 - **SIMPLIFIED**: Single glossary lookup without language parameter
 
-### 4. Document Retrieval Phase
-The system uses an Ensemble Retriever that combines five different retrieval techniques:
+### 4. Persistent Retriever Execution Phase
+The system uses **Persistent Retrievers** with intelligent lifecycle management and health monitoring:
 
-#### 4.1 Base Vector Retriever
-- Standard semantic search using document embeddings
+#### 4.1 Retriever Health Validation
+- **Health Checks**: Automatic validation of all persistent retrievers before use
+- **Connection Validation**: Verify connections to Milvus, MongoDB, and external services
+- **Performance Monitoring**: Real-time performance metrics collection
+- **Error Recovery**: Automatic recovery and re-initialization for failed retrievers
+
+#### 4.2 Persistent Ensemble Retriever Architecture
+The system maintains persistent instances of specialized retrievers:
+
+**Base Vector Retriever (Persistent)**
+- Long-lived connection to Milvus vector database
+- Optimized embedding search with connection pooling
 - Weight: `RETRIEVER_WEIGHTS_BASE` (default: 0.1)
 
-#### 4.2 Parent Document Retriever
-- Retrieves larger parent documents for better context
-- Uses hierarchical document structure
+**Parent Document Retriever (Persistent)**
+- Persistent MongoDB connections for parent document retrieval
+- Optimized hierarchical document structure access
 - Weight: `RETRIEVER_WEIGHTS_PARENT` (default: 0.3)
 
-#### 4.3 Multi-Query Retriever
-- Generates multiple query variations for broader document coverage
-- Uses LLM to create alternative phrasings
+**Multi-Query Retriever (Persistent)**
+- Persistent LLM connections for query variation generation
+- Cached query patterns for improved performance
 - Weight: `RETRIEVER_WEIGHTS_MULTI_QUERY` (default: 0.4)
 
-#### 4.4 HyDE Retriever (Hypothetical Document Embedder)
-- Generates hypothetical answer document
-- Embeds generated document to find similar real documents
+**HyDE Retriever (Persistent)**
+- Persistent Azure OpenAI connections for hypothetical document generation
+- Connection pooling for embedding generation
 - Weight: `RETRIEVER_WEIGHTS_HYDE` (default: 0.1)
 
-#### 4.5 BM25 Retriever
-- Keyword-based search for complementary results
-- Traditional TF-IDF approach
+**BM25 Retriever (Persistent)**
+- In-memory persistent indexes for keyword search
+- Optimized TF-IDF calculations with caching
 - Weight: `RETRIEVER_WEIGHTS_BM25` (default: 0.1)
 
-#### 4.6 Unified Parallel Retrieval Execution
-- Multiple queries (original + step-back + variations) are processed in parallel
-- **UNIFIED RETRIEVER**: Single retriever handles all languages
-- All queries run through the unified ensemble retriever
-- Results are collected and deduplicated by content hash
-- **Async Enhancement**: Retrieval metrics logged asynchronously
+#### 4.3 Intelligent Parallel Retrieval with Observability
+- **Parallel Processing**: Multiple queries processed simultaneously with persistent connections
+- **Distributed Tracing**: Full tracing of retrieval operations across all retrievers
+- **Performance Metrics**: Real-time metrics collection for each retriever type
+- **Error Handling**: Graceful degradation and automatic fallback mechanisms
+- **Resource Management**: Intelligent connection pooling and resource optimization
+- **Background Metrics**: Asynchronous logging of retrieval performance and success rates
 
 ### 5. Document Reranking Phase (Multilingual)
 #### 5.1 Multilingual Unified Reranking
@@ -337,31 +401,56 @@ The system uses multiple Redis data structures with content validation:
 - Modified caching logic to exclude error responses
 - Implemented cleanup of existing error responses
 
-## Unified Configuration Parameters
+## Environment-Aware Configuration System
 
-Key system parameters that control unified behavior:
+The system implements comprehensive environment-specific configurations with automatic optimization:
 
-### **Unified Processing Configuration**
+### **Environment Profiles**
+- **Development**: Debug-friendly settings with relaxed timeouts and extensive logging
+- **Staging**: Production-like settings for comprehensive testing
+- **Production**: Optimized settings with security hardening and performance tuning
+
+### **Core Configuration Parameters**
+- `ENVIRONMENT`: Current environment (development/staging/production)
+- `PRODUCTION_MODE`: Enable production optimizations (default: False)
+- `DEBUG_MODE`: Enable debug features (environment-dependent)
 - `EMBEDDING_MODEL_NAME`: Unified embedding model ("azure_openai")
 - `AZURE_OPENAI_EMBEDDING_MODEL`: Single model for all languages ("text-embedding-ada-002")
 - `COHERE_RERANKING_MODEL`: Multilingual reranking model ("rerank-multilingual-v3.0")
 - `COLLECTION_NAME`: Unified collection name (without language suffixes)
 
-### **Cache and Performance Parameters**
-- `QUERY_SIMILARITY_THRESHOLD`: Minimum similarity for semantic cache hits (default: 0.85)
-- `MIN_RERANKING_SCORE`: Minimum score for document inclusion and cache storage (default: 0.2)
-- `MAX_CHUNKS_LLM`: Maximum documents sent to LLM (default: 6)
-- `RETRIEVER_WEIGHTS_*`: Ensemble retriever weight distribution
-- `ADVANCED_CACHE_TTL_HOURS`: Cache entry time-to-live (default: 24 hours)
-- `ADVANCED_CACHE_ENABLED`: Enable/disable advanced caching features (default: True)
-- `SEMANTIC_CACHING_ENABLED`: Enable/disable semantic similarity matching (default: True)
-- `ASYNC_METADATA_QUEUE_SIZE`: Size of async processing queues (default: 1000)
-- `ASYNC_METADATA_BATCH_SIZE`: Batch size for async operations (default: 10)
+### **Performance and Scaling Parameters**
+- `PRODUCTION_CONNECTION_POOL_ENABLED`: Enable connection pooling (production: True)
+- `PRODUCTION_MIN_CONNECTIONS_MULTIPLIER`: Connection pool scaling factor (production: 2)
+- `PRODUCTION_MAX_CONNECTIONS_MULTIPLIER`: Maximum connection scaling (production: 4)
+- `PRODUCTION_RETRIEVER_CACHE_SIZE`: Retriever cache size (production: 1000)
+- `PRODUCTION_HEALTH_CHECK_INTERVAL`: Health check frequency (production: 30s)
+- `RETRIEVER_WEIGHTS_*`: Environment-specific ensemble retriever weights
+- `QUERY_SIMILARITY_THRESHOLD`: Semantic cache similarity threshold (default: 0.85)
+- `MIN_RERANKING_SCORE`: Document relevance threshold (default: 0.2)
+- `MAX_CHUNKS_LLM`: Maximum documents per query (default: 6)
 
-### **Eliminated Configuration**
-- **REMOVED**: `GERMAN_EMBEDDING_MODEL_NAME` and `ENGLISH_EMBEDDING_MODEL_NAME`
-- **REMOVED**: `GERMAN_COHERE_RERANKING_MODEL` and `ENGLISH_COHERE_RERANKING_MODEL`
-- **REMOVED**: `DEFAULT_LANGUAGE` parameter
+### **Observability Configuration**
+- `OBSERVABILITY_ENABLED`: Enable comprehensive observability (production: True)
+- `METRICS_EXPORT_ENABLED`: Enable Prometheus metrics export (production: True)
+- `PROMETHEUS_ENABLED`: Enable Prometheus integration (production: True)
+- `GRAFANA_ENABLED`: Enable Grafana dashboards (production: True)
+- `ALERTING_ENABLED`: Enable automated alerting (production: True)
+- `TRACING_ENABLED`: Enable distributed tracing (production: True)
+- `STRUCTURED_LOGGING_ENABLED`: Enable JSON structured logging (production: True)
+
+### **Security and Resource Management**
+- `PRODUCTION_SECURITY_ENABLED`: Security hardening features (production: True)
+- `PRODUCTION_RATE_LIMITING_ENABLED`: API rate limiting (production: True)
+- `PRODUCTION_MAX_MEMORY_MB`: Memory limits (production: 4096)
+- `CONTAINER_MEMORY_LIMIT`: Docker container memory limit (production: 4Gi)
+- `DEPLOYMENT_STRATEGY`: Deployment strategy (blue-green/rolling)
+
+### **Background Processing**
+- `ASYNC_METADATA_QUEUE_SIZE`: Async processing queue size (default: 1000)
+- `ASYNC_METADATA_BATCH_SIZE`: Batch processing size (default: 10)
+- `BACKGROUND_TASK_ENABLED`: Enable background processing (production: True)
+- `METRICS_COLLECTION_INTERVAL`: Metrics collection frequency (production: 30s)
 
 ## Security and Data Privacy
 
