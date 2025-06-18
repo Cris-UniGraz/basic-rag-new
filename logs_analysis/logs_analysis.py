@@ -38,8 +38,13 @@ def process_jsonl_file(file_path):
                     
                     # Extraer datos principales
                     query = extra.get('query', '')
+                    query_was_answered = extra.get('query_was_answered', 'False')
                     total_time = extra.get('total_time', 0)
                     phase_breakdown = extra.get('phase_breakdown', {})
+                    
+                    # Determinar si la respuesta fue generada
+                    print(f"Procesando query: {query} (Answered: {query_was_answered})")
+                    answer_symbol = "✓" if query_was_answered else "✗"
                     
                     # Extraer tiempos de cada fase
                     cache_optimization = phase_breakdown.get('cache_optimization', 0)
@@ -53,6 +58,7 @@ def process_jsonl_file(file_path):
                     row = [
                         f"{query_count})",  # Número de query
                         query,              # Query/Anfrage
+                        answer_symbol,  # Respuesta generada?
                         format_decimal(total_time),  # Total time
                         format_decimal(cache_optimization),  # Phase 1 time
                         format_percentage(cache_optimization, total_time),  # Phase 1 %
@@ -62,7 +68,7 @@ def process_jsonl_file(file_path):
                         format_percentage(retrieval, total_time),  # Phase 3 %
                         format_decimal(processing_reranking),  # Phase 4 time
                         format_percentage(processing_reranking, total_time),  # Phase 4 %
-                        format_decimal(response_preparation),  # Phase 5 time
+                        format_decimal(response_preparation, 5),  # Phase 5 time
                         format_percentage(response_preparation, total_time),  # Phase 5 %
                         format_decimal(llm_generation),  # Phase 6 time
                         format_percentage(llm_generation, total_time)  # Phase 6 %
@@ -86,10 +92,11 @@ def create_csv_output(performance_data, output_path):
     # Encabezados según el formato del archivo original
     headers = [
         ["Async pipeline performance summary", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
-        ["Anfrage", "", "Total Time [s]", "Phase 1:\nCache Optimization", "", "Phase 2:\nQuery Pre-processing", "", "Phase 3:\nRetrieval", "", "Phase 4:\nReranking", "", "Phase 5:\nResponse Preparation", "", "Phase 6:\nLLM Generation", ""]
+        ["Anfrage", "", "Answer generated?", "Total Time [s]", "Phase 1:\nCache Optimization", "", "Phase 2:\nQuery Pre-processing", "", "Phase 3:\nRetrieval", "", "Phase 4:\nReranking", "", "Phase 5:\nResponse Preparation", "", "Phase 6:\nLLM Generation", ""]
     ]
     
-    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+    # Cambiar encoding a 'utf-8-sig' para incluir BOM
+    with open(output_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
         writer = csv.writer(csvfile, delimiter=';')
         
         # Escribir encabezados
@@ -111,7 +118,7 @@ def main():
         output_dir = create_directories()
         
         # Rutas de archivos
-        input_file = Path("logs/async_logs.jsonl") # "logs/async_logs_old.jsonl"
+        input_file = Path("logs/async_logs.jsonl") # "logs/async_logs_gpt-4.1-mini.jsonl" # "logs/async_logs_gpt-4.1-nano.jsonl"
         output_file = output_dir / "Performance_rag_project_analysis.csv"
         
         # Verificar que el archivo de entrada existe

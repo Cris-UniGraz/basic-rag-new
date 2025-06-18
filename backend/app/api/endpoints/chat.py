@@ -316,29 +316,108 @@ async def chat(
                         detail="Es tut mir leid, ich bin auf einen Fehler gestoßen: Timeout"
                     )
             
-            # Log pipeline metrics if available
-            if 'pipeline_metrics' in result and settings.ASYNC_PIPELINE_PHASE_LOGGING:
-                metrics = result['pipeline_metrics']
-                async_metadata_processor.log_async("INFO", 
-                    "Async pipeline performance summary",
-                    {
-                        "total_time": metrics.get('total_time', 0),
-                        "phase_breakdown": {
-                            "cache_optimization": metrics.get('phase1_time', 0),
-                            "query_generation": metrics.get('phase2_time', 0),
-                            "retrieval": metrics.get('phase3_time', 0),
-                            "processing_reranking": metrics.get('phase4_time', 0),
-                            "response_preparation": metrics.get('phase5_time', 0),
-                            "llm_generation": metrics.get('phase6_time', 0)
-                        },
-                        "query": user_query[:50] + "..." if len(user_query) > 50 else user_query
-                    })
+            # Log pipeline metrics if available  
+            if settings.ASYNC_PIPELINE_PHASE_LOGGING:
+                # Determine if query was answered successfully
+                from_cache = result.get('from_cache', False)
+                response_text = result.get('response', '')
+                sources = result.get('sources', [])
+                documents = result.get('documents', [])
+                
+                # Query is considered answered if:
+                # 1. Response came from cache (exact or semantic match)
+                # 2. Response is generated and has relevant documents with sufficient reranking score
+                # 3. Response is not empty and not an error message
+                query_was_answered = False
+                
+                if from_cache:
+                    # Cache hit means query was answered
+                    query_was_answered = True
+                elif response_text and response_text.strip():
+                    # Check if we have documents with sufficient reranking score
+                    if documents:
+                        has_relevant_docs = any(
+                            doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE 
+                            for doc in documents if hasattr(doc, 'metadata') and doc.metadata
+                        )
+                        query_was_answered = has_relevant_docs
+                    elif sources:
+                        # If we have sources, consider it answered
+                        query_was_answered = True
+                    else:
+                        # Check if response is not a default error message
+                        error_phrases = [
+                            "Leider konnte ich", 
+                            "keine relevanten Informationen",
+                            "Zeitüberschreitung",
+                            "tut mir leid",
+                            "auf einen Fehler gestoßen"
+                        ]
+                        query_was_answered = not any(phrase in response_text for phrase in error_phrases)
+                
+                if 'pipeline_metrics' in result:
+                    metrics = result['pipeline_metrics']
+                    async_metadata_processor.log_async("INFO", 
+                        "Async pipeline performance summary",
+                        {
+                            "total_time": metrics.get('total_time', 0),
+                            "phase_breakdown": {
+                                "cache_optimization": metrics.get('phase1_time', 0),
+                                "query_generation": metrics.get('phase2_time', 0),
+                                "retrieval": metrics.get('phase3_time', 0),
+                                "processing_reranking": metrics.get('phase4_time', 0),
+                                "response_preparation": metrics.get('phase5_time', 0),
+                                "llm_generation": metrics.get('phase6_time', 0)
+                            },
+                            "query": user_query,  # Complete query without truncation
+                            "query_was_answered": query_was_answered
+                        })
+                else:
+                    # No pipeline metrics available - log basic information
+                    processing_time_so_far = time.time() - start_time
+                    async_metadata_processor.log_async("INFO", 
+                        "Async pipeline performance summary",
+                        {
+                            "total_time": processing_time_so_far,
+                            "phase_breakdown": {
+                                "cache_optimization": 0.0,
+                                "query_generation": 0.0,
+                                "retrieval": 0.0,
+                                "processing_reranking": 0.0,
+                                "response_preparation": 0.0,
+                                "llm_generation": 0.0
+                            },
+                            "query": user_query,  # Complete query without truncation
+                            "query_was_answered": query_was_answered,
+                            "note": "No detailed pipeline metrics available"
+                        })
             
             logger.debug("Advanced async pipeline completed successfully")
         except Exception as e:
             logger.error(f"Error during RAG processing: {e}")
             logger.error(f"Exception type: {type(e).__name__}")
             ERROR_COUNTER.labels(error_type=type(e).__name__, component="rag_service").inc()
+            
+            # Log error in pipeline metrics format
+            if settings.ASYNC_PIPELINE_PHASE_LOGGING:
+                processing_time_error = time.time() - start_time
+                async_metadata_processor.log_async("INFO", 
+                    "Async pipeline performance summary",
+                    {
+                        "total_time": processing_time_error,
+                        "phase_breakdown": {
+                            "cache_optimization": 0.0,
+                            "query_generation": 0.0,
+                            "retrieval": 0.0,
+                            "processing_reranking": 0.0,
+                            "response_preparation": 0.0,
+                            "llm_generation": 0.0
+                        },
+                        "query": user_query,  # Complete query without truncation
+                        "query_was_answered": False,  # Error means query was not answered
+                        "error": str(e),
+                        "error_type": type(e).__name__
+                    })
             
             # Provide user-friendly error messages
             if "CancelledError" in str(e) or "cancelled" in str(e).lower():

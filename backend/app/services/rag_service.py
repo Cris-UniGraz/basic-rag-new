@@ -1279,6 +1279,16 @@ class RAGService:
             # Handle cache hit
             if cache_result and not isinstance(cache_result, Exception):
                 logger.info("Early return from cache in async pipeline")
+                # Add pipeline metrics for cache hit (all phases are 0 except phase 1)
+                cache_result['pipeline_metrics'] = {
+                    'phase1_time': phase1_time,
+                    'phase2_time': 0.0,
+                    'phase3_time': 0.0, 
+                    'phase4_time': 0.0,
+                    'phase5_time': 0.0,
+                    'phase6_time': 0.0,
+                    'total_time': phase1_time
+                }
                 return cache_result
             
             # Handle optimization result
@@ -1294,10 +1304,39 @@ class RAGService:
             # Handle semantic cache result
             if optimized_query['source'] == 'cache':
                 logger.info("Exact cache hit from optimizer")
-                return {'result': optimized_query['result'], 'source': 'cache'}
+                cache_response = optimized_query['result']
+                # Add pipeline metrics for exact cache hit (all phases are 0 except phase 1)
+                return {
+                    'response': cache_response.get('response', ''),
+                    'sources': cache_response.get('sources', []),
+                    'from_cache': True,
+                    'processing_time': phase1_time,
+                    'documents': [],
+                    'pipeline_metrics': {
+                        'phase1_time': phase1_time,
+                        'phase2_time': 0.0,
+                        'phase3_time': 0.0,
+                        'phase4_time': 0.0,
+                        'phase5_time': 0.0,
+                        'phase6_time': 0.0,
+                        'total_time': phase1_time
+                    }
+                }
             elif optimized_query['source'] == 'semantic_cache':
                 logger.info("Semantic cache hit from optimizer")
-                return await self._handle_semantic_cache_result(optimized_query, query)
+                semantic_result = await self._handle_semantic_cache_result(optimized_query, query)
+                # Add pipeline metrics for semantic cache hit (phases 2 and 3 are 0, others may have time)
+                if 'pipeline_metrics' not in semantic_result:
+                    semantic_result['pipeline_metrics'] = {
+                        'phase1_time': phase1_time,
+                        'phase2_time': 0.0,
+                        'phase3_time': 0.0,
+                        'phase4_time': semantic_result.get('reranking_time', 0.0),
+                        'phase5_time': 0.0,
+                        'phase6_time': 0.0,
+                        'total_time': phase1_time + semantic_result.get('reranking_time', 0.0)
+                    }
+                return semantic_result
             
             # === PHASE 2: PARALLEL QUERY GENERATION AND PREPARATION ===
             phase2_start = time.time()
@@ -1752,6 +1791,8 @@ class RAGService:
             logger.info(f"Found valid semantic cache with response (length: {len(original_response)}) and {len(sources)} sources")
             
             try:
+                reranking_start = time.time()
+                
                 # Convert stored sources to documents for reranking
                 cached_documents = []
                 for source_metadata in sources:
@@ -1856,14 +1897,17 @@ class RAGService:
                         
                         self.query_optimizer._store_llm_response(query, new_response, enhanced_sources_for_cache)
                         
+                        reranking_time = time.time() - reranking_start
                         logger.info(f"Generated new response using {len(filtered_context)} reranked cached chunks from semantic match")
                         return {
                             'response': new_response,
                             'sources': response_sources,
                             'from_cache': False,
                             'semantic_match': match_info,
-                            'processing_time': 0.0,
-                            'used_cached_chunks': True
+                            'processing_time': reranking_time,
+                            'used_cached_chunks': True,
+                            'reranking_time': reranking_time,
+                            'documents': filtered_context
                         }
                 
             except Exception as e:
@@ -1871,7 +1915,15 @@ class RAGService:
         
         # Fallback to original cached response
         logger.info("Using original cached response from semantic match")
-        return optimized_query['result']
+        cached_response = optimized_query['result']
+        return {
+            'response': cached_response.get('response', ''),
+            'sources': cached_response.get('sources', []),
+            'from_cache': True,
+            'semantic_match': match_info,
+            'processing_time': 0.0,
+            'documents': []
+        }
     
     async def initialize_retrievers_parallel(
         self,
