@@ -1415,7 +1415,7 @@ class RAGService:
             if not retrieval_tasks:
                 logger.warning("No retrieval tasks available - no valid retrievers")
                 return {
-                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.",
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/",
                     'sources': [], 
                     'from_cache': False,
                     'processing_time': time.time() - pipeline_start_time
@@ -1505,7 +1505,7 @@ class RAGService:
             if not consolidated_docs:
                 logger.warning("No documents retrieved after consolidation")
                 return {
-                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.",
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/",
                     'sources': [], 
                     'from_cache': False,
                     'processing_time': time.time() - pipeline_start_time
@@ -1555,16 +1555,17 @@ class RAGService:
                     
                     if not current_matching_terms:
                         prompt_template = ChatPromptTemplate.from_template(
-                            """
+                            f"""
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                            Give always detailed answers.
+                            Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
+                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
-                            QUERY: ```{question}```
+                            QUERY: ```{{question}}```
 
-                            CONTEXT: ```{context}```
+                            CONTEXT: ```{{context}}```
                             """
                         )
                         return prompt_template, None
@@ -1572,20 +1573,22 @@ class RAGService:
                         relevant_glossary = "\n".join([f"{term}: {explanation}"
                                                      for term, explanation in current_matching_terms])
                         prompt_template = ChatPromptTemplate.from_template(
-                            """
+                            f"""
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                            Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                            If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
+                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                             The following terms from the query have specific meanings:
-                            {glossary}
+                            {{glossary}}
 
-                            Please consider these specific meanings when responding. Give always detailed answers.
+                            Please consider these specific meanings when responding.
 
-                            QUERY: ```{question}```
+                            QUERY: ```{{question}}```
 
-                            CONTEXT: ```{context}```
+                            CONTEXT: ```{{context}}```
                             """
                         )
                         return prompt_template, relevant_glossary
@@ -1612,16 +1615,18 @@ class RAGService:
             if isinstance(prompt_result, Exception):
                 logger.error(f"Prompt preparation failed: {prompt_result}")
                 # Use fallback for prompt preparation
-                prompt_result = (ChatPromptTemplate.from_template("""
+                prompt_result = (ChatPromptTemplate.from_template(
+                    f"""
                     You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                     Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                    Give always detailed answers.
+                    Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                    If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
+                    "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
-                    QUERY: ```{question}```
+                    QUERY: ```{{question}}```
 
-                    CONTEXT: ```{context}```
+                    CONTEXT: ```{{context}}```
                     """), None)
             
             # Safely extract values
@@ -1840,36 +1845,39 @@ class RAGService:
                         # Generate new response
                         if not matching_terms:
                             prompt_template = ChatPromptTemplate.from_template(
-                                """
+                                f"""
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
-                                Give always detailed answers.
+                                Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
+                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
-                                QUERY: ```{question}```
+                                QUERY: ```{{question}}```
 
-                                CONTEXT: ```{context}```
+                                CONTEXT: ```{{context}}```
                                 """
                             )
                         else:
                             relevant_glossary = "\n".join([f"{term}: {explanation}"
                                                          for term, explanation in matching_terms])
                             prompt_template = ChatPromptTemplate.from_template(
-                                """
+                                f"""
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.
+                                Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
+                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                                 The following terms from the query have specific meanings:
-                                {glossary}
+                                {{glossary}}
 
-                                Please consider these specific meanings when responding. Give always detailed answers.
+                                Please consider these specific meanings when responding.
 
-                                QUERY: ```{question}```
+                                QUERY: ```{{question}}```
 
-                                CONTEXT: ```{context}```
+                                CONTEXT: ```{{context}}```
                                 """
                             )
                         

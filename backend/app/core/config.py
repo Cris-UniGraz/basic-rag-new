@@ -39,6 +39,9 @@ class Settings(BaseSettings):
 
     # Embedding Models Configuration
     EMBEDDING_MODEL_NAME: str
+    
+    # Answer Generation Configuration
+    ANSWER_MAX_LENGTH: int = Field(default=700)
 
     # Chunking Parameters
     CHUNK_SIZE: int = Field(default=512)
