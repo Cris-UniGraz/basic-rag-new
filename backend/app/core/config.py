@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     ENABLE_CORS: bool = Field(default=True)
     ALLOWED_ORIGINS: List[str] = Field(default=["http://localhost:8501", "http://frontend:8501"])
 
+    # Azure LLM Configuration
+    AZURE_LLM_MODEL = str
+
     # Azure OpenAI Configuration
     AZURE_OPENAI_API_KEY: str
     AZURE_OPENAI_ENDPOINT: str
@@ -22,6 +25,13 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_EMBEDDINGS_DEPLOYMENT_ID: str
     AZURE_OPENAI_LLM_MODEL: str
     AZURE_OPENAI_EMBEDDING_MODEL: str
+    
+    # Azure Meta Configuration
+    AZURE_META_API_KEY = str
+    AZURE_META_ENDPOINT = str
+    AZURE_META_API_VERSION= str
+    AZURE_META_API_LLM_DEPLOYMENT_ID = str
+    AZURE_META_LLM_MODEL = str
     
     # Azure Cohere API
     AZURE_COHERE_ENDPOINT: str

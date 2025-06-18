@@ -316,7 +316,7 @@ def send_message(message: str) -> Dict[str, Any]:
                 get_api_url("/chat/chat"),
                 json=messages,  # Send messages directly as the JSON body
                 params=params,  # Send return_documents as query parameters
-                timeout=120.0  # Longer timeout for RAG
+                timeout=180.0  # Longer timeout for RAG
             )
             
             # Add more debug info
