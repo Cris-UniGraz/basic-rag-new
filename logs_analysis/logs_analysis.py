@@ -43,7 +43,7 @@ def process_jsonl_file(file_path):
                     phase_breakdown = extra.get('phase_breakdown', {})
                     
                     # Determinar si la respuesta fue generada
-                    print(f"Procesando query: {query} (Answered: {query_was_answered})")
+                    # print(f"Procesando query: {query} (Answered: {query_was_answered})")
                     answer_symbol = "✓" if query_was_answered else "✗"
                     
                     # Extraer tiempos de cada fase
