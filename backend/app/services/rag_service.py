@@ -1559,7 +1559,7 @@ class RAGService:
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                            Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                             If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
                             "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
@@ -1577,7 +1577,7 @@ class RAGService:
                             You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                             Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                            Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                            Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                             If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
                             "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
@@ -1620,7 +1620,7 @@ class RAGService:
                     You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                     Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                    Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                    Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                     If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
                     "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
@@ -1849,7 +1849,7 @@ class RAGService:
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                                Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                                 If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
                                 "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
@@ -1866,7 +1866,7 @@ class RAGService:
                                 You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
                                 Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
-                                Give always detailed answers. Summarize the answer so that it contains {settings.ANSWER_MAX_LENGTH} characters or less.
+                                Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                                 If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
                                 "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
 
