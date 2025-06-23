@@ -451,7 +451,7 @@ async def chat(
         
         if not response:
             async_metadata_processor.log_async("WARNING", "RAG service returned empty response", priority=2)
-            response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Weitere Informationen finden sich unter: https://intranet.uni-graz.at/"
+            response = "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
         
         # Format response
         chat_response = ChatResponse(

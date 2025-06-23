@@ -1415,7 +1415,7 @@ class RAGService:
             if not retrieval_tasks:
                 logger.warning("No retrieval tasks available - no valid retrievers")
                 return {
-                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/",
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/",
                     'sources': [], 
                     'from_cache': False,
                     'processing_time': time.time() - pipeline_start_time
@@ -1505,7 +1505,7 @@ class RAGService:
             if not consolidated_docs:
                 logger.warning("No documents retrieved after consolidation")
                 return {
-                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/",
+                    'response': "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/",
                     'sources': [], 
                     'from_cache': False,
                     'processing_time': time.time() - pipeline_start_time
@@ -1561,7 +1561,7 @@ class RAGService:
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
                             Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                             If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
-                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
+                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                             QUERY: ```{{question}}```
 
@@ -1579,7 +1579,7 @@ class RAGService:
                             Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
                             Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                             If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
-                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
+                            "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                             The following terms from the query have specific meanings:
                             {{glossary}}
@@ -1622,7 +1622,7 @@ class RAGService:
                     Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
                     Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                     If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
-                    "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
+                    "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                     QUERY: ```{{question}}```
 
@@ -1851,7 +1851,7 @@ class RAGService:
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
                                 Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                                 If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
-                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
+                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                                 QUERY: ```{{question}}```
 
@@ -1868,7 +1868,7 @@ class RAGService:
                                 Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
                                 Give always detailed answers. Summarize the answer so that it does not exceed {settings.ANSWER_MAX_LENGTH} characters.
                                 If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
-                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden. Für weitere Informationen siehe: https://intranet.uni-graz.at/"
+                                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
 
                                 The following terms from the query have specific meanings:
                                 {{glossary}}
