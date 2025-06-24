@@ -22,12 +22,11 @@ class AzureMetaLLMTester:
     
     def __init__(self):
         """Initialize the Azure Meta LLM client"""
-        
-        self.endpoint = AZURE_META_ENDPOINT
-        self.api_key = AZURE_META_API_KEY
-        self.api_version = AZURE_META_API_VERSION
-        self.deployment_id = AZURE_META_API_LLM_DEPLOYMENT_ID
-        self.model_name = AZURE_META_LLM_MODEL
+        self.endpoint = settings.AZURE_META_ENDPOINT
+        self.api_key = settings.AZURE_META_API_KEY
+        self.api_version = settings.AZURE_META_API_VERSION
+        self.deployment_id = settings.AZURE_META_API_LLM_DEPLOYMENT_ID
+        self.model_name = settings.AZURE_META_LLM_MODEL
         
         # Validate required environment variables
         self._validate_config()

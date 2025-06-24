@@ -97,6 +97,7 @@ class EnvironmentManager:
                 "CACHE_TTL": 900,  # 15 minutes
             },
             required_vars=[
+                "AZURE_LLM_MODEL",
                 "AZURE_OPENAI_API_KEY",
                 "AZURE_OPENAI_ENDPOINT",
                 "AZURE_COHERE_API_KEY",
@@ -139,6 +140,7 @@ class EnvironmentManager:
                 "CACHE_TTL": 3600,  # 1 hour
             },
             required_vars=[
+                "AZURE_LLM_MODEL",
                 "AZURE_OPENAI_API_KEY",
                 "AZURE_OPENAI_ENDPOINT",
                 "AZURE_COHERE_API_KEY",
@@ -183,6 +185,7 @@ class EnvironmentManager:
                 "PRODUCTION_MODE": True,
             },
             required_vars=[
+                "AZURE_LLM_MODEL",
                 "AZURE_OPENAI_API_KEY",
                 "AZURE_OPENAI_ENDPOINT",
                 "AZURE_COHERE_API_KEY",
@@ -243,6 +246,47 @@ class EnvironmentManager:
             validation_results["errors"].extend([
                 f"Missing required environment variable: {var}" for var in missing_required
             ])
+        
+        # Validate AZURE_LLM_MODEL specifically
+        azure_llm_model = os.getenv("AZURE_LLM_MODEL", "").strip().lower()
+        if azure_llm_model:
+            supported_models = ['openai', 'meta']
+            if azure_llm_model not in supported_models:
+                validation_results["valid"] = False
+                validation_results["errors"].append(
+                    f"Invalid AZURE_LLM_MODEL: '{azure_llm_model}'. "
+                    f"Supported values: {supported_models}"
+                )
+            else:
+                # Validate model-specific required variables
+                if azure_llm_model == 'openai':
+                    openai_vars = [
+                        "AZURE_OPENAI_API_KEY",
+                        "AZURE_OPENAI_ENDPOINT", 
+                        "AZURE_OPENAI_API_VERSION",
+                        "AZURE_OPENAI_API_LLM_DEPLOYMENT_ID",
+                        "AZURE_OPENAI_LLM_MODEL"
+                    ]
+                    missing_openai = [var for var in openai_vars if not os.getenv(var)]
+                    if missing_openai:
+                        validation_results["valid"] = False
+                        validation_results["errors"].extend([
+                            f"Missing OpenAI-specific variable: {var}" for var in missing_openai
+                        ])
+                elif azure_llm_model == 'meta':
+                    meta_vars = [
+                        "AZURE_META_API_KEY",
+                        "AZURE_META_ENDPOINT",
+                        "AZURE_META_API_VERSION", 
+                        "AZURE_META_API_LLM_DEPLOYMENT_ID",
+                        "AZURE_META_LLM_MODEL"
+                    ]
+                    missing_meta = [var for var in meta_vars if not os.getenv(var)]
+                    if missing_meta:
+                        validation_results["valid"] = False
+                        validation_results["errors"].extend([
+                            f"Missing Meta-specific variable: {var}" for var in missing_meta
+                        ])
         
         # Check optional variables and provide warnings
         missing_optional = []
