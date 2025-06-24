@@ -33,7 +33,7 @@ def process_jsonl_file(file_path):
                 data = json.loads(line.strip())
                 
                 # Verificar si es una línea de "Async pipeline performance summary"
-                if (data.get('data', {}).get('message') == 'Async pipeline performance summary'):
+                if (data.get('data', {}).get('message') == 'Async pipeline performance summary'): # 'Async pipeline phase timings'): # 'Async pipeline performance summary'):
                     extra = data['data']['extra']
                     
                     # Extraer datos principales
