@@ -23,12 +23,6 @@ class AzureMetaLLMTester:
     def __init__(self):
         """Initialize the Azure Meta LLM client"""
         
-        AZURE_META_API_KEY = 'FARgooGnCb80LweVNXQ4BhQiOdEj8p4jkZcyQEuMYfIpc0K9XRDSJQQJ99BDACfhMk5XJ3w3AAAAACOGhh4K'
-        AZURE_META_ENDPOINT = 'https://ai-aihubcmtest001262006175313.services.ai.azure.com/models'
-        AZURE_META_API_VERSION = '2024-05-01-preview'
-        AZURE_META_API_LLM_DEPLOYMENT_ID = 'Llama-4-Maverick-17B-128E-Instruct-FP8' # 'Llama-4-Maverick-17B-128E-Instruct-FP8' # "Llama-4-Scout-17B-16E-Instruct"
-        AZURE_META_LLM_MODEL = 'Llama-4-Maverick-17B-128E-Instruct-FP8' # 'Llama-4-Maverick-17B-128E-Instruct-FP8' # "Llama-4-Scout-17B-16E-Instruct"
-        
         self.endpoint = AZURE_META_ENDPOINT
         self.api_key = AZURE_META_API_KEY
         self.api_version = AZURE_META_API_VERSION

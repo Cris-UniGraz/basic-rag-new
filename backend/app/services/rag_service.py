@@ -849,6 +849,64 @@ class RAGService:
 
         return retriever
 
+    async def _get_reformulated_query(
+        self,
+        query: str,
+        chat_history: List[Tuple[str, str]] = []
+    ) -> str:
+        """
+        Get the reformulated query that would be used by the history-aware retriever.
+        
+        Args:
+            query: Original query string
+            chat_history: Chat history
+            
+        Returns:
+            Reformulated query considering chat history context
+        """
+        try:
+            # If no chat history, return original query
+            if not chat_history:
+                return query
+            
+            # Format chat history
+            formatted_history = []
+            for human_msg, ai_msg in chat_history:
+                formatted_history.extend([
+                    HumanMessage(content=human_msg),
+                    AIMessage(content=ai_msg)
+                ])
+            
+            # Use the same prompt as the history-aware retriever
+            contextualize_q_system_prompt = (
+                f"Given a chat history and the latest user question which might reference "
+                f"context in the chat history, formulate a standalone question which can "
+                f"be understood without the chat history. Do NOT answer the question, just "
+                f"reformulate it if needed and otherwise return it as is."
+            )
+            
+            contextualize_q_prompt = ChatPromptTemplate.from_messages([
+                ("system", contextualize_q_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}")
+            ])
+            
+            # Create chain and get reformulated query
+            chain = contextualize_q_prompt | self.llm_provider | StrOutputParser()
+            reformulated_query = await chain.ainvoke({
+                "input": query,
+                "chat_history": formatted_history
+            })
+            
+            if settings.SHOW_INTERNAL_MESSAGES:
+                logger.debug(f"Query reformulation:\nOriginal: {query}\nReformulated: {reformulated_query}")
+            
+            return reformulated_query.strip() if reformulated_query else query
+            
+        except Exception as e:
+            logger.error(f"Error reformulating query: {e}")
+            return query
+
     @coroutine_manager.coroutine_handler(task_type="retrieval")
     async def retrieve_context_without_reranking(
         self,
@@ -1301,6 +1359,26 @@ class RAGService:
                 logger.warning(f"Glossary check failed: {matching_terms}")
                 matching_terms = []
             
+            # Determine if this is a semantic cache hit
+            is_semantic_cache_hit = optimized_query['source'] == 'semantic_cache'
+            
+            # Get reformulated query (only if not semantic cache hit)
+            if is_semantic_cache_hit:
+                # For semantic cache, use original query for reranking and LLM
+                query_for_reranking_and_llm = query
+                logger.info("Semantic cache detected - will use original query for reranking and LLM")
+            else:
+                # For normal processing, get reformulated query
+                try:
+                    query_for_reranking_and_llm = await self._get_reformulated_query(query, chat_history)
+                    if query_for_reranking_and_llm != query:
+                        logger.info(f"Query reformulated for reranking/LLM: '{query[:50]}...' -> '{query_for_reranking_and_llm[:50]}...'")
+                    else:
+                        logger.info("Query did not need reformulation (no chat history or no changes)")
+                except Exception as e:
+                    logger.error(f"Error getting reformulated query: {e}")
+                    query_for_reranking_and_llm = query
+            
             # Handle semantic cache result
             if optimized_query['source'] == 'cache':
                 logger.info("Exact cache hit from optimizer")
@@ -1511,8 +1589,8 @@ class RAGService:
                     'processing_time': time.time() - pipeline_start_time
                 }
             
-            # Perform reranking
-            reranked_docs = await self.rerank_docs(query, consolidated_docs, reranker_model)
+            # Perform reranking using the appropriate query
+            reranked_docs = await self.rerank_docs(query_for_reranking_and_llm, consolidated_docs, reranker_model)
             
             phase4_time = time.time() - phase4_start
             logger.debug(f"Phase 4 (processing/reranking) completed in {phase4_time:.2f}s")
@@ -1646,13 +1724,13 @@ class RAGService:
             # Create processing chain
             chain = prompt_template | self.llm_provider | StrOutputParser()
             
-            # Generate response with timeout
+            # Generate response with timeout using the appropriate query
             try:
                 if relevant_glossary:
                     response = await asyncio.wait_for(
                         chain.ainvoke({
                             "context": filtered_context,
-                            "question": query,
+                            "question": query_for_reranking_and_llm,
                             "glossary": relevant_glossary
                         }),
                         timeout=settings.LLM_GENERATION_TIMEOUT
@@ -1661,7 +1739,7 @@ class RAGService:
                     response = await asyncio.wait_for(
                         chain.ainvoke({
                             "context": filtered_context,
-                            "question": query
+                            "question": query_for_reranking_and_llm
                         }),
                         timeout=settings.LLM_GENERATION_TIMEOUT
                     )
@@ -1711,8 +1789,8 @@ class RAGService:
                         enhanced_metadata['chunk_content'] = doc.page_content
                         enhanced_sources_for_cache.append(enhanced_metadata)
                 
-                self.query_optimizer._store_llm_response(query, response, enhanced_sources_for_cache)
-                logger.info(f"Response cached for query: '{query[:50]}...' (relevant documents found)")
+                self.query_optimizer._store_llm_response(query_for_reranking_and_llm, response, enhanced_sources_for_cache)
+                logger.info(f"Response cached for query: '{query_for_reranking_and_llm[:50]}...' (relevant documents found)")
             
             logger.info(f"Async pipeline completed in {total_processing_time:.2f}s "
                        f"(phases: {phase1_time:.2f}+{phase2_time:.2f}+{phase3_time:.2f}+{phase4_time:.2f}+{phase5_time:.2f}+{phase6_time:.2f})")

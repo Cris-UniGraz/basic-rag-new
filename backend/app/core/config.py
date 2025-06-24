@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     DONT_KEEP_COLLECTIONS: bool = Field(default=False)
     
     # Advanced Pipeline Configuration
-    ASYNC_PIPELINE_PHASE_LOGGING: bool = Field(default=True)  # Log detailed phase timings
+    ASYNC_PIPELINE_PHASE_LOGGING: bool = Field(default=False)  # Log detailed phase timings
     ASYNC_PIPELINE_PARALLEL_LIMIT: int = Field(default=10)  # Max parallel tasks in pipeline
     
     # Timeout Configuration
