@@ -1081,7 +1081,7 @@ def display_chat():
 def handle_user_input():
     """Handle user input with streaming support using Streamlit chat elements."""
     # Create input area at the bottom with clear button inline
-    col1, col2 = st.columns([1, 9])
+    col1, col2 = st.columns([0.35, 9.65])
     
     with col1:
         # Red clear button
