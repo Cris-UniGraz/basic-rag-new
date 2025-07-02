@@ -100,6 +100,12 @@ div[data-testid="column"]:first-child .stButton > button {
 div[data-testid="column"]:first-child .stButton > button:hover {
     background-color: #C82333 !important;
 }
+/* Disabled button styling */
+div[data-testid="column"]:first-child .stButton > button:disabled {
+    background-color: #6C757D !important;
+    color: #ADB5BD !important;
+    cursor: not-allowed !important;
+}
 /* Align the clear button with chat input */
 .stChatInput {
     margin-bottom: 0 !important;
@@ -108,24 +114,19 @@ div[data-testid="column"]:first-child .stButton > button:hover {
 """, unsafe_allow_html=True)
 
 
-# Initialize session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-# Language state removed - using unified processing
-if "sources" not in st.session_state:
-    st.session_state.sources = []
-if "processing_time" not in st.session_state:
-    st.session_state.processing_time = None
-if "collections" not in st.session_state:
-    st.session_state.collections = []
-if "api_url" not in st.session_state:
-    st.session_state.api_url = DEFAULT_API_URL
-if "selected_collection" not in st.session_state:
-    # Si SHOW_FULL_FRONTEND es False, usamos la colección predefinida
-    if not SHOW_FULL_FRONTEND and COLLECTION_NAME:
-        st.session_state.selected_collection = COLLECTION_NAME
-    else:
-        st.session_state.selected_collection = ""
+# Initialize session state efficiently
+session_defaults = {
+    "messages": [],
+    "sources": [],
+    "processing_time": None,
+    "collections": [],
+    "api_url": DEFAULT_API_URL,
+    "selected_collection": COLLECTION_NAME if not SHOW_FULL_FRONTEND and COLLECTION_NAME else ""
+}
+
+for key, default_value in session_defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_value
 
 
 # Functions for API interaction
@@ -1084,16 +1085,24 @@ def handle_user_input():
     col1, col2 = st.columns([0.35, 9.65])
     
     with col1:
-        # Red clear button
-        if st.button("🗑️", key="clear_chat", help="Chat löschen"):
-            st.session_state.messages = []
-            st.session_state.sources = []
-            st.session_state.processing_time = None
-            # Clear the pending response flag
-            if "pending_response" in st.session_state:
-                del st.session_state["pending_response"]
-            st.rerun()
-            
+        # Red clear button - only show if there are messages to clear
+        if st.session_state.messages:
+            if st.button("🗑️", key="clear_chat", help="Chat löschen"):
+                # Clear all chat data efficiently
+                st.session_state.messages.clear()
+                st.session_state.sources.clear() if hasattr(st.session_state, 'sources') else None
+                st.session_state.processing_time = None
+                # Clear the pending response flag
+                if "pending_response" in st.session_state:
+                    del st.session_state["pending_response"]
+                # Clear any streaming state
+                if "streaming_content" in st.session_state:
+                    del st.session_state["streaming_content"]
+                st.rerun()
+        else:
+            # Show disabled button when no messages
+            st.button("🗑️", key="clear_chat_disabled", help="Kein Chat zum Löschen", disabled=True)
+        
         st.markdown(
             """
             <style>
