@@ -1027,56 +1027,74 @@ def display_chat():
     """Display the chat interface using Streamlit's native chat elements."""
     # Display all messages in the chat history
     for i, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"]):
-            # Check if this is an empty assistant message (placeholder) and we're pending response
-            is_streaming_placeholder = (message["role"] == "assistant" and 
-                                      not message["content"] and
-                                      st.session_state.get("pending_response", False))
-            
-            if is_streaming_placeholder:
-                # This is a live streaming message - show current content
-                streaming_placeholder = st.empty()
+        # INICIO: Modificación para mensajes de usuario
+        if message['role'] == 'user':
+            # Usar HTML/CSS para alinear el mensaje del usuario a la derecha
+            st.markdown(
+                f"""
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;">
+                    <div style="background-color: #0072C6; color: white; border-radius: 0.5rem; padding: 0.5rem 1rem; max-width: 70%; text-align: left;">
+                        {message['content']}
+                    </div>
+                    <div style="font-size: 1.75rem; margin-left: 0.5rem; align-self: flex-end;">
+                        👤
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        # FIN: Modificación para mensajes de usuario
+        else: # Mantener la lógica original para el asistente
+            with st.chat_message(message["role"]):
+                # Check if this is an empty assistant message (placeholder) and we're pending response
+                is_streaming_placeholder = (message["role"] == "assistant" and 
+                                          not message["content"] and
+                                          st.session_state.get("pending_response", False))
                 
-                # Show spinner while processing
-                with st.spinner("Denken..."):
-                    # Start streaming - this will update the placeholder in real-time
-                    response_data = get_streaming_response_live(streaming_placeholder)
-                
-                # Update the message content with final response
-                st.session_state.messages[i]["content"] = response_data["response"]
-                st.session_state.messages[i]["sources"] = response_data["sources"]
-                st.session_state.messages[i]["processing_time"] = response_data["processing_time"]
-                
-                # Clear pending response flag
-                st.session_state.pending_response = False
-                
-                # Rerun to show final content with sources and processing time
-                st.rerun()
-            else:
-                # Regular message display
-                st.markdown(message["content"])
-                
-                # Show sources for completed assistant messages
-                if message['role'] == 'assistant' and 'sources' in message and message['sources']:
-                    sources = message['sources']
-                    with st.expander("📚 Quellen", expanded=False):
-                        for j, source in enumerate(sources, 1):
-                            st.markdown(f"**{j}. {source['source']}**")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write(f"📄 Seite: {source.get('page_number', 'N/A')}")
-                                st.write(f"📁 Typ: {source.get('file_type', 'Unknown')}")
-                            with col2:
-                                if source.get('sheet_name'):
-                                    st.write(f"📊 Blatt: {source['sheet_name']}")
-                                if 'reranking_score' in source:
-                                    st.write(f"⭐ Relevanz: {source.get('reranking_score', 0):.3f}")
-                            if j < len(sources):
-                                st.divider()
-                
-                # Show processing time for completed assistant messages
-                if message['role'] == 'assistant' and 'processing_time' in message and message['processing_time'] > 0:
-                    st.caption(f"⏱️ Antwort generiert in {message['processing_time']:.2f} Sekunden")
+                if is_streaming_placeholder:
+                    # This is a live streaming message - show current content
+                    streaming_placeholder = st.empty()
+                    
+                    # Show spinner while processing
+                    with st.spinner("Denken..."):
+                        # Start streaming - this will update the placeholder in real-time
+                        response_data = get_streaming_response_live(streaming_placeholder)
+                    
+                    # Update the message content with final response
+                    st.session_state.messages[i]["content"] = response_data["response"]
+                    st.session_state.messages[i]["sources"] = response_data["sources"]
+                    st.session_state.messages[i]["processing_time"] = response_data["processing_time"]
+                    
+                    # Clear pending response flag
+                    st.session_state.pending_response = False
+                    
+                    # Rerun to show final content with sources and processing time
+                    st.rerun()
+                else:
+                    # Regular message display
+                    st.markdown(message["content"])
+                    
+                    # Show sources for completed assistant messages
+                    if message['role'] == 'assistant' and 'sources' in message and message['sources']:
+                        sources = message['sources']
+                        with st.expander("📚 Quellen", expanded=False):
+                            for j, source in enumerate(sources, 1):
+                                st.markdown(f"**{j}. {source['source']}**")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write(f"📄 Seite: {source.get('page_number', 'N/A')}")
+                                    st.write(f"📁 Typ: {source.get('file_type', 'Unknown')}")
+                                with col2:
+                                    if source.get('sheet_name'):
+                                        st.write(f"📊 Blatt: {source['sheet_name']}")
+                                    if 'reranking_score' in source:
+                                        st.write(f"⭐ Relevanz: {source.get('reranking_score', 0):.3f}")
+                                if j < len(sources):
+                                    st.divider()
+                    
+                    # Show processing time for completed assistant messages
+                    if message['role'] == 'assistant' and 'processing_time' in message and message['processing_time'] > 0:
+                        st.caption(f"⏱️ Antwort generiert in {message['processing_time']:.2f} Sekunden")
 
 
 def handle_user_input():
