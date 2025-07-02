@@ -300,6 +300,7 @@ def get_streaming_response_live(streaming_placeholder) -> Dict[str, Any]:
                         current_response += chunk
                         
                         # Update the streaming display immediately with each chunk
+                        # The spinner will automatically hide when we start updating the placeholder
                         streaming_placeholder.markdown(current_response)
                         first_chunk_received = True
                         
@@ -1035,11 +1036,10 @@ def display_chat():
                 # This is a live streaming message - show current content
                 streaming_placeholder = st.empty()
                 
-                # Show thinking initially
-                streaming_placeholder.markdown("🤔 **Denken...**")
-                
-                # Start streaming - this will update the placeholder in real-time
-                response_data = get_streaming_response_live(streaming_placeholder)
+                # Show spinner while processing
+                with st.spinner("Denken..."):
+                    # Start streaming - this will update the placeholder in real-time
+                    response_data = get_streaming_response_live(streaming_placeholder)
                 
                 # Update the message content with final response
                 st.session_state.messages[i]["content"] = response_data["response"]
