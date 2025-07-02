@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, AsyncGenerator
 from loguru import logger
 
 from app.services.llm_providers import get_llm_provider, LLMProviderFactory
@@ -44,6 +44,24 @@ class LLMService:
             Model response
         """
         return await self.provider.generate_response(prompt, system_prompt)
+    
+    async def generate_response_stream(
+        self, 
+        prompt: str, 
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response asynchronously.
+        
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            
+        Yields:
+            Response chunks as they are generated
+        """
+        async for chunk in self.provider.generate_response_stream(prompt, system_prompt):
+            yield chunk
     
     def __call__(self, prompt: Any) -> str:
         """

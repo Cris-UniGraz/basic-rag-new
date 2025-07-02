@@ -388,6 +388,9 @@ class Settings(BaseSettings):
     CONTAINER_MEMORY_LIMIT: str = Field(default="2g")  # Container memory limit
     CONTAINER_CPU_LIMIT: str = Field(default="1")  # Container CPU limit
     CONTAINER_RESTART_POLICY: str = Field(default="unless-stopped")  # Container restart policy
+    
+    # Streaming Response Configuration
+    STREAMING_RESPONSE: bool = Field(default=True)  # Enable streaming response in Phase 6
 
     class Config:
         env_file = ".env"

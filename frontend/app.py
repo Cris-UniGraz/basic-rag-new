@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import asyncio
 from dotenv import load_dotenv
+import aiohttp
+import requests
 
 # Forzar tema oscuro antes de cualquier otra operación de Streamlit
 os.environ['STREAMLIT_THEME'] = 'dark'
@@ -35,8 +37,10 @@ print(f"Using API URL: {DEFAULT_API_URL}")
 # Frontend configuration
 SHOW_FULL_FRONTEND = os.getenv("SHOW_FULL_FRONTEND", "True").lower() == "true"
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "")
+ENABLE_FRONTEND_STREAMING = os.getenv("ENABLE_FRONTEND_STREAMING", "True").lower() == "true"
 print(f"SHOW_FULL_FRONTEND: {SHOW_FULL_FRONTEND}")
 print(f"Default COLLECTION_NAME: {COLLECTION_NAME}")
+print(f"ENABLE_FRONTEND_STREAMING: {ENABLE_FRONTEND_STREAMING}")
 
 # Try several API URLs to find one that works
 ALL_API_URLS = [
@@ -72,70 +76,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Add custom CSS
+# Add minimal custom CSS for better styling
 st.markdown("""
 <style>
-/* Estilos generales para el tema oscuro */
-body {
-    color: #FAFAFA;
-    background-color: #0E1117;
-}
-
-.chat-message {
-    padding: 1.5rem;
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-    display: flex;
-    flex-direction: column;
-}
-.chat-message.user {
-    background-color: #1E2730;
-    border-left: 3px solid #4B8BF4;
-}
-.chat-message.assistant {
-    background-color: #262D3D;
-    border-left: 3px solid #36D399;
-}
-.chat-message .avatar {
-    width: 20%;
-}
-.chat-message .avatar img {
-    max-width: 78px;
-    max-height: 78px;
-    border-radius: 50%;
-    object-fit: cover;
-}
-.chat-message .message {
-    width: 80%;
-    padding: 0 1.5rem;
-}
-.source-item {
-    margin-bottom: 0.5rem;
-    padding: 0.5rem;
-    border-radius: 0.25rem;
-    background-color: rgba(75, 139, 244, 0.15);
-    border: 1px solid rgba(75, 139, 244, 0.3);
-}
-.source-label {
-    font-weight: bold;
-    color: #4B8BF4;
-}
-
-/* Mejoras para mejor legibilidad en tema oscuro */
-h1, h2, h3 {
-    color: #FFFFFF !important;
-}
-.stTextInput > div > div > input {
-    color: #FAFAFA;
-    background-color: #262730;
-}
+/* Minimal styling for chat interface */
 .stButton > button {
-    background-color: #4B8BF4;
+    background-color: #FF4B4B;
     color: white;
+    border-radius: 0.5rem;
 }
-.stSelectbox > div > div > div {
-    background-color: #262730;
-    color: #FAFAFA;
+.stButton > button:hover {
+    background-color: #FF6B6B;
+}
+/* Specific styling for clear button */
+div[data-testid="column"]:first-child .stButton > button {
+    background-color: #DC3545 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 0.5rem !important;
+    height: 2.5rem !important;
+    margin-top: 1.75rem !important;
+}
+div[data-testid="column"]:first-child .stButton > button:hover {
+    background-color: #C82333 !important;
+}
+/* Align the clear button with chat input */
+.stChatInput {
+    margin-bottom: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -268,6 +235,617 @@ def get_collections() -> List[Dict[str, Any]]:
         return []
 
 
+def get_streaming_response_live(streaming_placeholder) -> Dict[str, Any]:
+    """
+    Get streaming response and display it live in the existing chat interface.
+    
+    Args:
+        streaming_placeholder: Streamlit placeholder to update with streaming content
+    
+    Returns:
+        Final API response data
+    """
+    try:
+        # Prepare messages for API - exclude empty assistant messages (placeholders)
+        messages = []
+        for msg in st.session_state.messages:
+            # Skip empty assistant messages (placeholders)
+            if msg["role"] == "assistant" and not msg["content"]:
+                continue
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Prepare parameters
+        params = {}
+        if "selected_collection" in st.session_state and st.session_state.selected_collection:
+            params["collection_name"] = st.session_state.selected_collection
+        
+        # Make streaming request
+        current_response = ""
+        sources = []
+        processing_time = 0
+        from_cache = False
+        first_chunk_received = False
+        
+        response = requests.post(
+            get_api_url("/chat/stream"),
+            json=messages,
+            params=params,
+            stream=True,
+            timeout=180.0
+        )
+        
+        response.raise_for_status()
+        
+        # Process streaming response
+        for line in response.iter_lines(decode_unicode=True):
+            if line and line.startswith("data: "):
+                try:
+                    data = json.loads(line[6:])  # Remove "data: " prefix
+                    
+                    if "error" in data:
+                        streaming_placeholder.error(f"❌ Error: {data['error']}")
+                        return {
+                            "response": f"Error: {data['error']}",
+                            "sources": [],
+                            "from_cache": False,
+                            "processing_time": 0
+                        }
+                    
+                    if "chunk" in data:
+                        # Add chunk to current response
+                        chunk = data["chunk"]
+                        current_response += chunk
+                        
+                        # Update the streaming display immediately with each chunk
+                        streaming_placeholder.markdown(current_response)
+                        first_chunk_received = True
+                        
+                        # Extract metadata if present
+                        if "sources" in data:
+                            sources = data["sources"]
+                        if "processing_time" in data:
+                            processing_time = data["processing_time"]
+                        if "from_cache" in data:
+                            from_cache = data["from_cache"]
+                    
+                    elif data.get("done"):
+                        # Extract final metadata from done signal
+                        if "sources" in data:
+                            sources = data["sources"]
+                        if "processing_time" in data:
+                            processing_time = data["processing_time"]
+                        if "from_cache" in data:
+                            from_cache = data["from_cache"]
+                        # Streaming complete
+                        break
+                        
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing streaming data: {e}")
+                    continue
+        
+        return {
+            "response": current_response,
+            "sources": sources,
+            "from_cache": from_cache,
+            "processing_time": processing_time
+        }
+        
+    except requests.exceptions.Timeout:
+        streaming_placeholder.error("⏰ Die Anfrage ist abgelaufen. Bitte versuchen Sie es erneut.")
+        return {
+            "response": "Die Anfrage ist abgelaufen. Bitte versuchen Sie es erneut.",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+    except requests.exceptions.RequestException as e:
+        streaming_placeholder.error(f"🌐 Netzwerkfehler: {str(e)}")
+        return {
+            "response": f"Netzwerkfehler: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+    except Exception as e:
+        streaming_placeholder.error(f"Fehler beim Streaming: {e}")
+        return {
+            "response": f"Entschuldigung, ein Fehler ist aufgetreten: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+
+
+def get_streaming_response(message: str, message_placeholder) -> Dict[str, Any]:
+    """
+    Get streaming response using Streamlit's write_stream functionality.
+    
+    Args:
+        message: User message
+        message_placeholder: Streamlit placeholder for response
+        
+    Returns:
+        Final API response data
+    """
+    try:
+        # Prepare messages for API
+        messages = []
+        for msg in st.session_state.messages:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Add current message (already added to session state)
+        # Don't add again to avoid duplication
+        
+        # Prepare parameters
+        params = {}
+        if "selected_collection" in st.session_state and st.session_state.selected_collection:
+            params["collection_name"] = st.session_state.selected_collection
+        
+        # Make streaming request
+        current_response = ""
+        sources = []
+        processing_time = 0
+        from_cache = False
+        
+        def response_generator():
+            """Generator function for streaming response."""
+            nonlocal current_response, sources, processing_time, from_cache
+            
+            try:
+                response = requests.post(
+                    get_api_url("/chat/stream"),
+                    json=messages,
+                    params=params,
+                    stream=True,
+                    timeout=180.0
+                )
+                
+                response.raise_for_status()
+                
+                # Process streaming response
+                for line in response.iter_lines(decode_unicode=True):
+                    if line and line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])  # Remove "data: " prefix
+                            
+                            if "error" in data:
+                                yield f"\n❌ Error: {data['error']}"
+                                return
+                            
+                            if "chunk" in data:
+                                # Yield the chunk for streaming display
+                                chunk = data["chunk"]
+                                current_response += chunk
+                                yield chunk
+                                
+                                # Extract metadata if present
+                                if "sources" in data:
+                                    sources = data["sources"]
+                                if "processing_time" in data:
+                                    processing_time = data["processing_time"]
+                                if "from_cache" in data:
+                                    from_cache = data["from_cache"]
+                            
+                            elif data.get("done"):
+                                # Streaming complete
+                                break
+                                
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing streaming data: {e}")
+                            continue
+                            
+            except requests.exceptions.Timeout:
+                yield "\n⏰ Die Anfrage ist abgelaufen. Bitte versuchen Sie es erneut."
+                current_response = "Die Anfrage ist abgelaufen. Bitte versuchen Sie es erneut."
+            except requests.exceptions.RequestException as e:
+                yield f"\n🌐 Netzwerkfehler: {str(e)}"
+                current_response = f"Netzwerkfehler: {str(e)}"
+        
+        # Clear the thinking indicator and stream the response
+        message_placeholder.empty()
+        streamed_text = st.write_stream(response_generator())
+        
+        return {
+            "response": current_response or streamed_text,
+            "sources": sources,
+            "from_cache": from_cache,
+            "processing_time": processing_time
+        }
+        
+    except Exception as e:
+        st.error(f"Fehler beim Streaming: {e}")
+        return {
+            "response": f"Entschuldigung, ein Fehler ist aufgetreten: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+
+
+def send_message_stream_integrated(message: str, response_placeholder) -> Dict[str, Any]:
+    """
+    Send a message to the streaming chat API with integrated chat display.
+    
+    Args:
+        message: User message
+        response_placeholder: Streamlit placeholder for response
+        
+    Returns:
+        Final API response data
+    """
+    try:
+        # Prepare messages for API
+        messages = []
+        for msg in st.session_state.messages:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Add current message
+        messages.append({
+            "role": "user",
+            "content": message
+        })
+        
+        # Prepare parameters
+        params = {}
+        if "selected_collection" in st.session_state and st.session_state.selected_collection:
+            params["collection_name"] = st.session_state.selected_collection
+            print(f"Using selected collection for streaming chat: {st.session_state.selected_collection}")
+        
+        # Make streaming request
+        current_response = ""
+        sources = []
+        processing_time = 0
+        from_cache = False
+        
+        try:
+            response = requests.post(
+                get_api_url("/chat/stream"),
+                json=messages,
+                params=params,
+                stream=True,
+                timeout=180.0
+            )
+            
+            response.raise_for_status()
+            
+            # Process streaming response
+            for line in response.iter_lines(decode_unicode=True):
+                if line and line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])  # Remove "data: " prefix
+                        
+                        if "error" in data:
+                            st.error(f"Streaming error: {data['error']}")
+                            break
+                        
+                        if "chunk" in data:
+                            # Add chunk to current response
+                            current_response += data["chunk"]
+                            
+                            # Update the response placeholder with streaming content
+                            # Use the same HTML structure as display_chat()
+                            with response_placeholder.container():
+                                st.markdown(f"""
+                                <div class="chat-message assistant">
+                                    <div class="message">
+                                        <p>{current_response}</p>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            
+                            # Extract metadata if present
+                            if "sources" in data:
+                                sources = data["sources"]
+                            if "processing_time" in data:
+                                processing_time = data["processing_time"]
+                            if "from_cache" in data:
+                                from_cache = data["from_cache"]
+                        
+                        elif data.get("done"):
+                            # Streaming complete
+                            break
+                            
+                        elif "status" in data:
+                            # Status update
+                            print(f"Status: {data.get('message', 'Processing...')}")
+                            
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing streaming data: {e}")
+                        continue
+            
+            return {
+                "response": current_response,
+                "sources": sources,
+                "from_cache": from_cache,
+                "processing_time": processing_time
+            }
+            
+        except requests.exceptions.Timeout:
+            st.error("Request timed out. Please try again.")
+            return {
+                "response": "I'm sorry, the request timed out. Please try again.",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+        except requests.exceptions.RequestException as e:
+            st.error(f"Network error: {e}")
+            return {
+                "response": f"I'm sorry, I encountered a network error: {str(e)}",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+            
+    except Exception as e:
+        st.error(f"Error sending streaming message: {e}")
+        return {
+            "response": f"I'm sorry, I encountered an error: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+
+
+def send_message_stream_improved(message: str) -> Dict[str, Any]:
+    """
+    Send a message to the streaming chat API with improved UI handling.
+    
+    Args:
+        message: User message
+        
+    Returns:
+        Final API response data
+    """
+    # Create a single container for the entire streaming process
+    assistant_container = st.empty()
+    
+    # Show initial "thinking" state
+    with assistant_container.container():
+        st.markdown("**Assistant:** 🤔 Denken...")
+    
+    try:
+        # Prepare messages for API
+        messages = []
+        for msg in st.session_state.messages:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Add current message
+        messages.append({
+            "role": "user",
+            "content": message
+        })
+        
+        # Prepare parameters
+        params = {}
+        if "selected_collection" in st.session_state and st.session_state.selected_collection:
+            params["collection_name"] = st.session_state.selected_collection
+            print(f"Using selected collection for streaming chat: {st.session_state.selected_collection}")
+        
+        # Make streaming request
+        current_response = ""
+        sources = []
+        processing_time = 0
+        from_cache = False
+        
+        try:
+            response = requests.post(
+                get_api_url("/chat/stream"),
+                json=messages,
+                params=params,
+                stream=True,
+                timeout=180.0
+            )
+            
+            response.raise_for_status()
+            
+            # Process streaming response
+            for line in response.iter_lines(decode_unicode=True):
+                if line and line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])  # Remove "data: " prefix
+                        
+                        if "error" in data:
+                            st.error(f"Streaming error: {data['error']}")
+                            break
+                        
+                        if "chunk" in data:
+                            # Add chunk to current response
+                            current_response += data["chunk"]
+                            
+                            # Update the container with streaming response
+                            with assistant_container.container():
+                                # Use markdown for better text rendering
+                                st.markdown(f"**Assistant:** {current_response}")
+                            
+                            # Extract metadata if present
+                            if "sources" in data:
+                                sources = data["sources"]
+                            if "processing_time" in data:
+                                processing_time = data["processing_time"]
+                            if "from_cache" in data:
+                                from_cache = data["from_cache"]
+                        
+                        elif data.get("done"):
+                            # Streaming complete
+                            break
+                            
+                        elif "status" in data:
+                            # Status update - update the thinking message
+                            status_message = data.get('message', 'Processing...')
+                            with assistant_container.container():
+                                st.markdown(f"**Assistant:** 🤔 {status_message}")
+                            
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing streaming data: {e}")
+                        continue
+            
+            return {
+                "response": current_response,
+                "sources": sources,
+                "from_cache": from_cache,
+                "processing_time": processing_time
+            }
+            
+        except requests.exceptions.Timeout:
+            st.error("Request timed out. Please try again.")
+            return {
+                "response": "I'm sorry, the request timed out. Please try again.",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+        except requests.exceptions.RequestException as e:
+            st.error(f"Network error: {e}")
+            return {
+                "response": f"I'm sorry, I encountered a network error: {str(e)}",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+            
+    except Exception as e:
+        st.error(f"Error sending streaming message: {e}")
+        return {
+            "response": f"I'm sorry, I encountered an error: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+
+
+def send_message_stream(message: str, response_container) -> Dict[str, Any]:
+    """
+    Send a message to the streaming chat API.
+    
+    Args:
+        message: User message
+        response_container: Streamlit container to update with streaming response
+        
+    Returns:
+        Final API response data
+    """
+    try:
+        # Prepare messages for API
+        messages = []
+        for msg in st.session_state.messages:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Add current message
+        messages.append({
+            "role": "user",
+            "content": message
+        })
+        
+        # Prepare parameters
+        params = {}
+        if "selected_collection" in st.session_state and st.session_state.selected_collection:
+            params["collection_name"] = st.session_state.selected_collection
+            print(f"Using selected collection for streaming chat: {st.session_state.selected_collection}")
+        
+        # Make streaming request
+        current_response = ""
+        sources = []
+        processing_time = 0
+        from_cache = False
+        
+        try:
+            response = requests.post(
+                get_api_url("/chat/stream"),
+                json=messages,
+                params=params,
+                stream=True,
+                timeout=180.0
+            )
+            
+            response.raise_for_status()
+            
+            # Process streaming response
+            for line in response.iter_lines(decode_unicode=True):
+                if line and line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])  # Remove "data: " prefix
+                        
+                        if "error" in data:
+                            st.error(f"Streaming error: {data['error']}")
+                            break
+                        
+                        if "chunk" in data:
+                            # Add chunk to current response
+                            current_response += data["chunk"]
+                            
+                            # Update the response container in real-time
+                            response_container.markdown(current_response)
+                            
+                            # Extract metadata if present
+                            if "sources" in data:
+                                sources = data["sources"]
+                            if "processing_time" in data:
+                                processing_time = data["processing_time"]
+                            if "from_cache" in data:
+                                from_cache = data["from_cache"]
+                        
+                        elif data.get("done"):
+                            # Streaming complete
+                            break
+                            
+                        elif "status" in data:
+                            # Status update
+                            print(f"Status: {data.get('message', 'Processing...')}")
+                            
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing streaming data: {e}")
+                        continue
+            
+            return {
+                "response": current_response,
+                "sources": sources,
+                "from_cache": from_cache,
+                "processing_time": processing_time
+            }
+            
+        except requests.exceptions.Timeout:
+            st.error("Request timed out. Please try again.")
+            return {
+                "response": "I'm sorry, the request timed out. Please try again.",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+        except requests.exceptions.RequestException as e:
+            st.error(f"Network error: {e}")
+            return {
+                "response": f"I'm sorry, I encountered a network error: {str(e)}",
+                "sources": [],
+                "from_cache": False,
+                "processing_time": 0
+            }
+            
+    except Exception as e:
+        st.error(f"Error sending streaming message: {e}")
+        return {
+            "response": f"I'm sorry, I encountered an error: {str(e)}",
+            "sources": [],
+            "from_cache": False,
+            "processing_time": 0
+        }
+
+
 def send_message(message: str) -> Dict[str, Any]:
     """
     Send a message to the chat API.
@@ -296,7 +874,7 @@ def send_message(message: str) -> Dict[str, Any]:
         # Call API
         with httpx.Client() as client:
             # Add debug logging
-            print(f"Sending request to {get_api_url('/chat/chat')}")
+            print(f"Sending request to {get_api_url('/chat')}")
             print(f"Request payload: {messages}")
             print(f"return_documents: {False}")
             
@@ -313,7 +891,7 @@ def send_message(message: str) -> Dict[str, Any]:
             # Send request with query parameters instead of in JSON body
             print(f"Sending messages: {messages}")
             response = client.post(
-                get_api_url("/chat/chat"),
+                get_api_url("/chat"),
                 json=messages,  # Send messages directly as the JSON body
                 params=params,  # Send return_documents as query parameters
                 timeout=180.0  # Longer timeout for RAG
@@ -444,60 +1022,78 @@ def search_documents(query: str, collection_name: Optional[str] = None, top_k: i
 
 # UI components
 def display_chat():
-    """Display the chat interface."""
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.container():
-            st.markdown(f"""
-            <div class="chat-message {message['role']}">
-                <div class="message">
-                    <p>{message['content']}</p>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+    """Display the chat interface using Streamlit's native chat elements."""
+    # Display all messages in the chat history
+    for i, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            # Check if this is an empty assistant message (placeholder) and we're pending response
+            is_streaming_placeholder = (message["role"] == "assistant" and 
+                                      not message["content"] and
+                                      st.session_state.get("pending_response", False))
             
-            # Mostrar las fuentes después de cada mensaje del asistente
-            if message['role'] == 'assistant' and 'sources' in message and message['sources']:
-                sources = message['sources']
-                with st.expander("Quellen", expanded=False):
-                    for source in sources:
-                        st.markdown("---")
-                        st.write(f"**Quelle:** {source['source']}")
-                        st.write(f"**Seite:** {source.get('page_number', 'N/A')}")
-                        st.write(f"**Typ:** {source.get('file_type', 'Unknown')}")
-                        
-                        if source.get('sheet_name'):
-                            st.write(f"**Blatt:** {source['sheet_name']}")
-                        
-                        if 'reranking_score' in source:
-                            st.write(f"**Punktestand:** {source.get('reranking_score', 0):.4f}")
+            if is_streaming_placeholder:
+                # This is a live streaming message - show current content
+                streaming_placeholder = st.empty()
                 
-                # Mostrar el tiempo de procesamiento si está disponible
-                if 'processing_time' in message:
-                    st.caption(f"Die Antwort wurde in {message['processing_time']:.2f} Sekunden generiert.")
-    
-    # Ya no necesitamos mostrar las fuentes al final, porque ahora se muestran con cada mensaje
-    # Mantenemos el código para mostrar el tiempo de procesamiento de la última respuesta
-    # para compatibilidad con el código existente
-    if st.session_state.processing_time:
-        pass  # Ya mostramos el tiempo con cada mensaje
+                # Show thinking initially
+                streaming_placeholder.markdown("🤔 **Denken...**")
+                
+                # Start streaming - this will update the placeholder in real-time
+                response_data = get_streaming_response_live(streaming_placeholder)
+                
+                # Update the message content with final response
+                st.session_state.messages[i]["content"] = response_data["response"]
+                st.session_state.messages[i]["sources"] = response_data["sources"]
+                st.session_state.messages[i]["processing_time"] = response_data["processing_time"]
+                
+                # Clear pending response flag
+                st.session_state.pending_response = False
+                
+                # Rerun to show final content with sources and processing time
+                st.rerun()
+            else:
+                # Regular message display
+                st.markdown(message["content"])
+                
+                # Show sources for completed assistant messages
+                if message['role'] == 'assistant' and 'sources' in message and message['sources']:
+                    sources = message['sources']
+                    with st.expander("📚 Quellen", expanded=False):
+                        for j, source in enumerate(sources, 1):
+                            st.markdown(f"**{j}. {source['source']}**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"📄 Seite: {source.get('page_number', 'N/A')}")
+                                st.write(f"📁 Typ: {source.get('file_type', 'Unknown')}")
+                            with col2:
+                                if source.get('sheet_name'):
+                                    st.write(f"📊 Blatt: {source['sheet_name']}")
+                                if 'reranking_score' in source:
+                                    st.write(f"⭐ Relevanz: {source.get('reranking_score', 0):.3f}")
+                            if j < len(sources):
+                                st.divider()
+                
+                # Show processing time for completed assistant messages
+                if message['role'] == 'assistant' and 'processing_time' in message and message['processing_time'] > 0:
+                    st.caption(f"⏱️ Antwort generiert in {message['processing_time']:.2f} Sekunden")
 
 
 def handle_user_input():
-    """Handle user input."""
-    # Create two columns: one for reset button and one for chat input
-    input_cols = st.columns([1, 10])
+    """Handle user input with streaming support using Streamlit chat elements."""
+    # Create input area at the bottom with clear button inline
+    col1, col2 = st.columns([1, 9])
     
-    # Reset button in the left column
-    with input_cols[0]:
-        if st.button("🗑️", key="reset_btn"):
+    with col1:
+        # Red clear button
+        if st.button("🗑️", key="clear_chat", help="Chat löschen"):
             st.session_state.messages = []
             st.session_state.sources = []
             st.session_state.processing_time = None
-            if 'waiting_for_response' in st.session_state:
-                st.session_state.waiting_for_response = False
+            # Clear the pending response flag
+            if "pending_response" in st.session_state:
+                del st.session_state["pending_response"]
             st.rerun()
-        
+            
         st.markdown(
             """
             <style>
@@ -509,49 +1105,24 @@ def handle_user_input():
             """,
             unsafe_allow_html=True
         )
-
-    # Get user input in the right column
-    with input_cols[1]:
+    
+    with col2:
         user_input = st.chat_input("Stelle eine Frage...")
     
-    if not user_input:
-        return
-    
-    # Add user message to state
-    st.session_state.messages.append({
-        "role": "user",
-        "content": user_input,
-        "timestamp": datetime.now().isoformat()
-    })
-      
-    # Show spinner while processing
-    with st.spinner("Denken..."):
-        # Send message to API
-        response = send_message(user_input)
-        
-        # Extract response
-        assistant_message = response.get("response", "I'm sorry, I couldn't generate a response.")
-        sources = response.get("sources", [])
-        processing_time = response.get("processing_time", 0)
-        
-        # Update state - incluir sources en el mensaje del asistente
+    # Process user input
+    if user_input:
+        # Add user message to chat history
         st.session_state.messages.append({
-            "role": "assistant",
-            "content": assistant_message,
-            "sources": sources,
-            "processing_time": processing_time,
+            "role": "user", 
+            "content": user_input,
             "timestamp": datetime.now().isoformat()
         })
         
-        # Mantener la última respuesta también en el state (para compatibilidad)
-        st.session_state.sources = sources
-        st.session_state.processing_time = processing_time
-    
-    # ELIMINAR ESTA LÍNEA - NO LLAMAR display_chat() aquí
-    # display_chat()  # <-- ELIMINAR ESTA LÍNEA
-      
-    # Rerun to update UI
-    st.rerun()
+        # Mark that we're waiting for a response
+        st.session_state.pending_response = True
+        
+        # Rerun to show the user message and start processing
+        st.rerun()
 
 
 def documents_tab():
@@ -860,6 +1431,18 @@ def settings_tab():
         st.session_state.processing_time = None
         st.success("Chat history cleared.")
     
+    # Streaming Configuration
+    st.subheader("Streaming Settings")
+    streaming_status = "Enabled" if ENABLE_FRONTEND_STREAMING else "Disabled"
+    st.write(f"Frontend Streaming: {streaming_status}")
+    
+    if ENABLE_FRONTEND_STREAMING:
+        st.info("🚀 Streaming is enabled! You'll see responses appear in real-time.")
+    else:
+        st.info("⚡ Streaming is disabled. Responses will appear all at once.")
+    
+    st.caption("Note: Streaming can be controlled via the ENABLE_FRONTEND_STREAMING environment variable.")
+    
     # API connection
     st.subheader("API Connection")
     api_url = st.session_state.get("api_url", DEFAULT_API_URL)
@@ -921,12 +1504,29 @@ def main():
     st.markdown('<div style="height:5px"></div>', unsafe_allow_html=True)
     st.title("Uni AI Chatbot")
     
+    # Check if we need to add an assistant response placeholder
+    if st.session_state.get("pending_response", False):
+        # Check if we already have an assistant placeholder
+        if (not st.session_state.messages or 
+            st.session_state.messages[-1]["role"] != "assistant"):
+            # Add assistant placeholder message
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "",  # Will be filled during streaming
+                "timestamp": datetime.now().isoformat()
+            })
+    
     # Si SHOW_FULL_FRONTEND es True, mostrar todas las pestañas
     if SHOW_FULL_FRONTEND:
         tab1, tab2, tab3 = st.tabs(["Chat", "Documents", "Settings"])
         
         with tab1:
-            display_chat()
+            # Create main container for better layout control
+            chat_container = st.container()
+            with chat_container:
+                display_chat()
+            
+            # Input stays at bottom
             handle_user_input()
         
         with tab2:
@@ -941,7 +1541,12 @@ def main():
             st.session_state.selected_collection = COLLECTION_NAME
             print(f"Using default collection: {COLLECTION_NAME}")
         
-        display_chat()
+        # Create main container for better layout control
+        chat_container = st.container()
+        with chat_container:
+            display_chat()
+        
+        # Input stays at bottom
         handle_user_input()
 
 

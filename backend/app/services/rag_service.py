@@ -2,7 +2,7 @@ import os
 import asyncio
 import time
 import json
-from typing import List, Dict, Any, Optional, Union, Tuple
+from typing import List, Dict, Any, Optional, Union, Tuple, AsyncGenerator
 from loguru import logger
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
@@ -1721,34 +1721,80 @@ class RAGService:
             # === PHASE 6: LLM RESPONSE GENERATION ===
             phase6_start = time.time()
             
-            # Create processing chain
-            chain = prompt_template | self.llm_provider | StrOutputParser()
-            
-            # Generate response with timeout using the appropriate query
-            try:
-                if relevant_glossary:
-                    response = await asyncio.wait_for(
-                        chain.ainvoke({
+            # Check if streaming is enabled
+            if settings.STREAMING_RESPONSE:
+                # Generate streaming response
+                try:
+                    # Prepare prompt for streaming
+                    if relevant_glossary:
+                        formatted_prompt = await prompt_template.aformat_prompt(
+                            context=filtered_context,
+                            question=query_for_reranking_and_llm,
+                            glossary=relevant_glossary
+                        )
+                    else:
+                        formatted_prompt = await prompt_template.aformat_prompt(
+                            context=filtered_context,
+                            question=query_for_reranking_and_llm
+                        )
+                    
+                    # Extract the formatted text from the prompt
+                    formatted_text = formatted_prompt.to_string()
+                    
+                    # Generate streaming response using the LLM provider
+                    response_chunks = []
+                    async for chunk in self.llm_provider.generate_response_stream(formatted_text):
+                        response_chunks.append(chunk)
+                    
+                    response = "".join(response_chunks)
+                    logger.debug(f"Generated streaming response with {len(response_chunks)} chunks")
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"LLM streaming generation timed out after {settings.LLM_GENERATION_TIMEOUT} seconds")
+                    response = "Leider konnte ich aufgrund einer Zeitüberschreitung keine Antwort generieren. Bitte versuchen Sie es mit einer einfacheren Anfrage erneut."
+                except Exception as e:
+                    logger.error(f"Error in streaming generation: {e}")
+                    # Fallback to non-streaming
+                    chain = prompt_template | self.llm_provider | StrOutputParser()
+                    if relevant_glossary:
+                        response = await chain.ainvoke({
                             "context": filtered_context,
                             "question": query_for_reranking_and_llm,
                             "glossary": relevant_glossary
-                        }),
-                        timeout=settings.LLM_GENERATION_TIMEOUT
-                    )
-                else:
-                    response = await asyncio.wait_for(
-                        chain.ainvoke({
+                        })
+                    else:
+                        response = await chain.ainvoke({
                             "context": filtered_context,
                             "question": query_for_reranking_and_llm
-                        }),
-                        timeout=settings.LLM_GENERATION_TIMEOUT
-                    )
-            except asyncio.TimeoutError:
-                logger.error(f"LLM generation timed out after {settings.LLM_GENERATION_TIMEOUT} seconds")
-                response = "Leider konnte ich aufgrund einer Zeitüberschreitung keine Antwort generieren. Bitte versuchen Sie es mit einer einfacheren Anfrage erneut."
+                        })
+            else:
+                # Generate non-streaming response (original behavior)
+                chain = prompt_template | self.llm_provider | StrOutputParser()
+                
+                try:
+                    if relevant_glossary:
+                        response = await asyncio.wait_for(
+                            chain.ainvoke({
+                                "context": filtered_context,
+                                "question": query_for_reranking_and_llm,
+                                "glossary": relevant_glossary
+                            }),
+                            timeout=settings.LLM_GENERATION_TIMEOUT
+                        )
+                    else:
+                        response = await asyncio.wait_for(
+                            chain.ainvoke({
+                                "context": filtered_context,
+                                "question": query_for_reranking_and_llm
+                            }),
+                            timeout=settings.LLM_GENERATION_TIMEOUT
+                        )
+                except asyncio.TimeoutError:
+                    logger.error(f"LLM generation timed out after {settings.LLM_GENERATION_TIMEOUT} seconds")
+                    response = "Leider konnte ich aufgrund einer Zeitüberschreitung keine Antwort generieren. Bitte versuchen Sie es mit einer einfacheren Anfrage erneut."
             
             phase6_time = time.time() - phase6_start
-            logger.debug(f"Phase 6 (LLM generation) completed in {phase6_time:.2f}s")
+            logger.debug(f"Phase 6 (LLM generation) completed in {phase6_time:.2f}s with streaming={'enabled' if settings.STREAMING_RESPONSE else 'disabled'}")
             
             # === FINAL PROCESSING ===
             total_processing_time = time.time() - pipeline_start_time
@@ -1959,20 +2005,64 @@ class RAGService:
                                 """
                             )
                         
-                        # Create processing chain and generate response
-                        chain = prompt_template | self.llm_provider | StrOutputParser()
-                        
-                        if matching_terms:
-                            new_response = await chain.ainvoke({
-                                "context": filtered_context,
-                                "question": query,
-                                "glossary": relevant_glossary
-                            })
+                        # Generate response using streaming or non-streaming based on settings
+                        if settings.STREAMING_RESPONSE:
+                            # Generate streaming response
+                            try:
+                                # Prepare prompt for streaming
+                                if matching_terms:
+                                    formatted_prompt = await prompt_template.aformat_prompt(
+                                        context=filtered_context,
+                                        question=query,
+                                        glossary=relevant_glossary
+                                    )
+                                else:
+                                    formatted_prompt = await prompt_template.aformat_prompt(
+                                        context=filtered_context,
+                                        question=query
+                                    )
+                                
+                                # Extract the formatted text from the prompt
+                                formatted_text = formatted_prompt.to_string()
+                                
+                                # Generate streaming response using the LLM provider
+                                response_chunks = []
+                                async for chunk in self.llm_provider.generate_response_stream(formatted_text):
+                                    response_chunks.append(chunk)
+                                
+                                new_response = "".join(response_chunks)
+                                logger.debug(f"Generated streaming response in semantic cache with {len(response_chunks)} chunks")
+                                
+                            except Exception as e:
+                                logger.error(f"Error in streaming generation for semantic cache: {e}")
+                                # Fallback to non-streaming
+                                chain = prompt_template | self.llm_provider | StrOutputParser()
+                                if matching_terms:
+                                    new_response = await chain.ainvoke({
+                                        "context": filtered_context,
+                                        "question": query,
+                                        "glossary": relevant_glossary
+                                    })
+                                else:
+                                    new_response = await chain.ainvoke({
+                                        "context": filtered_context,
+                                        "question": query
+                                    })
                         else:
-                            new_response = await chain.ainvoke({
-                                "context": filtered_context,
-                                "question": query
-                            })
+                            # Generate non-streaming response (original behavior)
+                            chain = prompt_template | self.llm_provider | StrOutputParser()
+                            
+                            if matching_terms:
+                                new_response = await chain.ainvoke({
+                                    "context": filtered_context,
+                                    "question": query,
+                                    "glossary": relevant_glossary
+                                })
+                            else:
+                                new_response = await chain.ainvoke({
+                                    "context": filtered_context,
+                                    "question": query
+                                })
                         
                         # Store new response in cache
                         enhanced_sources_for_cache = []
@@ -2011,6 +2101,647 @@ class RAGService:
             'documents': []
         }
     
+    async def process_query_until_phase5(
+        self,
+        query: str,
+        retriever: Any,
+        chat_history: List[Tuple[str, str]] = [],
+    ) -> Dict[str, Any]:
+        """
+        Process query through phases 1-5, returning state for Phase 6 streaming.
+        
+        Args:
+            query: User query
+            retriever: Unified retriever for the collection
+            chat_history: Chat history
+            
+        Returns:
+            Dictionary with processed context, prompt, and metadata for Phase 6
+        """
+        def _extract_valid_results(results: List[Any], task_descriptions: List[str] = None) -> List[Any]:
+            """Extract valid results from asyncio.gather results."""
+            valid_results = []
+            task_descriptions = task_descriptions or [f"task_{i}" for i in range(len(results))]
+            
+            for i, result in enumerate(results):
+                task_name = task_descriptions[i] if i < len(task_descriptions) else f"task_{i}"
+                
+                if isinstance(result, Exception):
+                    if isinstance(result, asyncio.CancelledError):
+                        logger.warning(f"Task '{task_name}' was cancelled")
+                    elif isinstance(result, asyncio.TimeoutError):
+                        logger.warning(f"Task '{task_name}' timed out")
+                    else:
+                        logger.error(f"Task '{task_name}' failed: {result}")
+                    continue
+                    
+                if result is None:
+                    logger.warning(f"Task '{task_name}' returned None result")
+                    continue
+                    
+                valid_results.append(result)
+            
+            return valid_results
+
+        pipeline_start_time = time.time()
+        logger.info(f"Starting Phase 1-5 processing for query: '{query[:50]}...'")
+        
+        # === PHASE 1: PARALLEL INITIALIZATION AND CACHE CHECK ===
+        phase1_start = time.time()
+        
+        async def cache_check_task():
+            cached_result = self.query_optimizer.get_llm_response(query)
+            if cached_result:
+                logger.info(f"Cache hit - Response length: {len(cached_result.get('response', ''))}")
+                return {
+                    'response': cached_result['response'],
+                    'sources': cached_result['sources'],
+                    'from_cache': True,
+                    'processing_time': 0.0
+                }
+            return None
+        
+        async def embedding_generation_task():
+            embedding_model = embedding_manager.model
+            return await self.query_optimizer.optimize_query(query, embedding_model)
+        
+        async def glossary_check_task():
+            from app.utils.glossary import find_glossary_terms_with_explanation
+            return find_glossary_terms_with_explanation(query)
+        
+        # Execute Phase 1 tasks in parallel
+        phase1_results = await asyncio.gather(
+            cache_check_task(),
+            embedding_generation_task(),
+            glossary_check_task(),
+            return_exceptions=True
+        )
+        
+        cache_result = phase1_results[0]
+        optimized_query = phase1_results[1]  
+        matching_terms = phase1_results[2]
+        
+        phase1_time = time.time() - phase1_start
+        logger.debug(f"Phase 1 completed in {phase1_time:.2f}s")
+        
+        # Handle cache hit - return immediately for streaming
+        if cache_result and not isinstance(cache_result, Exception):
+            return {
+                'type': 'cache_hit',
+                'response': cache_result['response'],
+                'sources': cache_result['sources'],
+                'from_cache': True,
+                'processing_time': phase1_time,
+                'phase_times': {'phase1_time': phase1_time}
+            }
+        
+        # Handle optimization result
+        if isinstance(optimized_query, Exception):
+            logger.warning(f"Query optimization failed: {optimized_query}")
+            optimized_query = {'result': {'original_query': query}, 'source': 'new'}
+        
+        # Handle glossary terms result
+        if isinstance(matching_terms, Exception):
+            logger.warning(f"Glossary check failed: {matching_terms}")
+            matching_terms = []
+        
+        # Determine if this is a semantic cache hit
+        is_semantic_cache_hit = optimized_query['source'] == 'semantic_cache'
+        
+        # Get reformulated query
+        if is_semantic_cache_hit:
+            query_for_reranking_and_llm = query
+            logger.info("Semantic cache detected")
+        else:
+            try:
+                query_for_reranking_and_llm = await self._get_reformulated_query(query, chat_history)
+            except Exception as e:
+                logger.error(f"Error getting reformulated query: {e}")
+                query_for_reranking_and_llm = query
+        
+        # Handle other cache types
+        if optimized_query['source'] == 'cache':
+            cache_response = optimized_query['result']
+            return {
+                'type': 'exact_cache',
+                'response': cache_response.get('response', ''),
+                'sources': cache_response.get('sources', []),
+                'from_cache': True,
+                'processing_time': phase1_time,
+                'phase_times': {'phase1_time': phase1_time}
+            }
+        elif optimized_query['source'] == 'semantic_cache':
+            semantic_result = await self._handle_semantic_cache_result(optimized_query, query)
+            semantic_result['type'] = 'semantic_cache'
+            return semantic_result
+        
+        # === PHASE 2: PARALLEL QUERY GENERATION ===
+        phase2_start = time.time()
+        
+        async def query_variations_task():
+            return await self.generate_all_queries_in_one_call(query)
+        
+        async def retriever_validation_task():
+            return {'retriever_available': retriever is not None}
+        
+        phase2_results = await asyncio.gather(
+            query_variations_task(),
+            retriever_validation_task(),
+            return_exceptions=True
+        )
+        
+        queries_result = phase2_results[0]
+        retriever_status = phase2_results[1]
+        
+        if isinstance(queries_result, Exception):
+            logger.error(f"Query generation failed: {queries_result}")
+            raise queries_result
+        
+        if isinstance(retriever_status, Exception):
+            retriever_status = {'retriever_available': retriever is not None}
+        
+        phase2_time = time.time() - phase2_start
+        
+        original_query = queries_result["original_query"]
+        step_back_query = queries_result["step_back_query"]
+        multi_queries = queries_result.get("multi_queries", [])
+        
+        # === PHASE 3: PARALLEL DOCUMENT RETRIEVAL ===
+        phase3_start = time.time()
+        
+        retrieval_tasks = []
+        task_descriptions = []
+        
+        if retriever_status.get('retriever_available', False):
+            retrieval_tasks.append(
+                self.retrieve_context_without_reranking(original_query, retriever, chat_history)
+            )
+            task_descriptions.append("Original query")
+            
+            if step_back_query:
+                retrieval_tasks.append(
+                    self.retrieve_context_without_reranking(step_back_query, retriever, chat_history)
+                )
+                task_descriptions.append("Step-back query")
+            
+            for i, multi_query in enumerate(multi_queries[:3]):
+                retrieval_tasks.append(
+                    self.retrieve_context_without_reranking(multi_query, retriever, chat_history)
+                )
+                task_descriptions.append(f"Multi-query {i+1}")
+        
+        if not retrieval_tasks:
+            raise RuntimeError("No retrieval tasks available")
+        
+        try:
+            retrieval_results = await asyncio.wait_for(
+                asyncio.gather(*retrieval_tasks, return_exceptions=True),
+                timeout=settings.RETRIEVAL_TASK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Retrieval tasks timed out after {settings.RETRIEVAL_TASK_TIMEOUT} seconds")
+            retrieval_results = [asyncio.TimeoutError("Retrieval timeout") for _ in retrieval_tasks]
+        
+        phase3_time = time.time() - phase3_start
+        
+        # === PHASE 4: PARALLEL RESULT PROCESSING AND RERANKING ===
+        phase4_start = time.time()
+        
+        async def document_consolidation_task():
+            all_retrieved_docs = []
+            seen_contents = set()
+            
+            valid_retrieval_results = _extract_valid_results(retrieval_results, task_descriptions)
+            
+            for result in valid_retrieval_results:
+                try:
+                    if not hasattr(result, '__iter__'):
+                        continue
+                        
+                    if result:
+                        for document in result:
+                            if not isinstance(document, Document):
+                                continue
+                            
+                            if not hasattr(document, 'metadata') or document.metadata is None:
+                                document.metadata = {}
+                            
+                            content_hash = hash(document.page_content)
+                            if content_hash not in seen_contents:
+                                seen_contents.add(content_hash)
+                                all_retrieved_docs.append(document)
+                                
+                except Exception as e:
+                    logger.error(f"Error processing retrieval result: {e}")
+                    continue
+            
+            logger.info(f"Consolidated {len(all_retrieved_docs)} unique documents")
+            return all_retrieved_docs
+        
+        async def reranking_preparation_task():
+            return settings.COHERE_RERANKING_MODEL
+        
+        phase4_results = await asyncio.gather(
+            document_consolidation_task(),
+            reranking_preparation_task(),
+            return_exceptions=True
+        )
+        
+        consolidated_docs = phase4_results[0]
+        reranker_model = phase4_results[1]
+        
+        if isinstance(consolidated_docs, Exception):
+            raise consolidated_docs
+        
+        if isinstance(reranker_model, Exception):
+            reranker_model = settings.COHERE_RERANKING_MODEL
+        
+        if not consolidated_docs:
+            raise RuntimeError("No documents retrieved after consolidation")
+        
+        # Perform reranking
+        reranked_docs = await self.rerank_docs(query_for_reranking_and_llm, consolidated_docs, reranker_model)
+        
+        phase4_time = time.time() - phase4_start
+        
+        # === PHASE 5: PARALLEL RESPONSE GENERATION PREPARATION ===
+        phase5_start = time.time()
+        
+        async def context_preparation_task():
+            filtered_context = []
+            sources = []
+            
+            reranked_docs.sort(key=lambda x: x.metadata.get('reranking_score', 0), reverse=True)
+            
+            for document in reranked_docs[:settings.MAX_CHUNKS_LLM]:
+                source = {
+                    'source': document.metadata.get('source', 'Unknown'),
+                    'page_number': document.metadata.get('page_number', 'N/A'),
+                    'file_type': document.metadata.get('file_type', 'Unknown'),
+                    'sheet_name': document.metadata.get('sheet_name', ''),
+                    'reranking_score': document.metadata.get('reranking_score', 0)
+                }
+                
+                if source not in sources:
+                    sources.append(source)
+                
+                filtered_context.append(document)
+            
+            return filtered_context, sources
+        
+        def create_prompt_preparation_task(terms):
+            async def prompt_preparation_task():
+                current_matching_terms = terms if not isinstance(terms, Exception) else []
+                
+                if not current_matching_terms:
+                    prompt_template = ChatPromptTemplate.from_template(
+                        f"""
+                        You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                        Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                        Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                        Give always detailed answers including the essential and important points and that it does not exceed {settings.ANSWER_MAX_LENGTH} characters in length.
+                        If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following:
+                        "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
+
+                        QUERY: ```{{question}}```
+
+                        CONTEXT: ```{{context}}```
+                        """
+                    )
+                    return prompt_template, None
+                else:
+                    relevant_glossary = "\n".join([f"{term}: {explanation}"
+                                                 for term, explanation in current_matching_terms])
+                    prompt_template = ChatPromptTemplate.from_template(
+                        f"""
+                        You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                        Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                        Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                        Give always detailed answers including the essential and important points and that it does not exceed {settings.ANSWER_MAX_LENGTH} characters in length.
+                        If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
+                        "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
+
+                        The following terms from the query have specific meanings:
+                        {{glossary}}
+
+                        Please consider these specific meanings when responding.
+
+                        QUERY: ```{{question}}```
+
+                        CONTEXT: ```{{context}}```
+                        """
+                    )
+                    return prompt_template, relevant_glossary
+            
+            return prompt_preparation_task
+        
+        phase5_results = await asyncio.gather(
+            context_preparation_task(),
+            create_prompt_preparation_task(matching_terms)(),
+            return_exceptions=True
+        )
+        
+        context_sources_result = phase5_results[0]
+        prompt_result = phase5_results[1]
+        
+        if isinstance(context_sources_result, Exception):
+            raise context_sources_result
+        
+        if isinstance(prompt_result, Exception):
+            prompt_result = (ChatPromptTemplate.from_template(
+                f"""
+                You are an experienced virtual assistant at the University of Graz and know all the information about the University of Graz.
+                Your main task is to extract information from the provided CONTEXT based on the user's QUERY.
+                Think step by step and only use the information from the CONTEXT that is relevant to the user's QUERY.
+                Give always detailed answers including the essential and important points and that it does not exceed {settings.ANSWER_MAX_LENGTH} characters in length.
+                If the CONTEXT does not contain information to answer the QUESTION, do not try to answer the question with your knowledge, just say following: 
+                "Leider konnte ich in den verfügbaren Dokumenten keine relevanten Informationen zu Ihrer Frage finden.\n\nFür weitere Informationen siehe: https://intranet.uni-graz.at/"
+
+                QUERY: ```{{question}}```
+
+                CONTEXT: ```{{context}}```
+                """), None)
+        
+        try:
+            filtered_context, sources = context_sources_result
+            prompt_template, relevant_glossary = prompt_result
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error unpacking Phase 5 results: {e}")
+            raise RuntimeError(f"Failed to process Phase 5 results: {str(e)}")
+        
+        phase5_time = time.time() - phase5_start
+        
+        # Calculate total processing time for phases 1-5
+        total_processing_time = time.time() - pipeline_start_time
+        
+        logger.info(f"Phases 1-5 completed in {total_processing_time:.2f}s")
+        
+        # Return state for Phase 6 streaming
+        return {
+            'type': 'ready_for_phase6',
+            'filtered_context': filtered_context,
+            'sources': sources,
+            'prompt_template': prompt_template,
+            'relevant_glossary': relevant_glossary,
+            'query_for_llm': query_for_reranking_and_llm,
+            'from_cache': False,
+            'phase_times': {
+                'phase1_time': phase1_time,
+                'phase2_time': phase2_time,
+                'phase3_time': phase3_time,
+                'phase4_time': phase4_time,
+                'phase5_time': phase5_time,
+                'total_phases_1_5': total_processing_time
+            }
+        }
+
+    async def stream_phase6_response(
+        self,
+        phase5_state: Dict[str, Any]
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Stream Phase 6 LLM response token by token using state from Phase 5.
+        
+        Args:
+            phase5_state: State from process_query_until_phase5
+            
+        Yields:
+            Streaming chunks or final metadata
+        """
+        try:
+            phase6_start = time.time()
+            
+            # Extract state from Phase 5
+            filtered_context = phase5_state['filtered_context']
+            sources = phase5_state['sources']
+            prompt_template = phase5_state['prompt_template']
+            relevant_glossary = phase5_state['relevant_glossary']
+            query_for_llm = phase5_state['query_for_llm']
+            
+            logger.info(f"Starting Phase 6 streaming with {len(filtered_context)} context documents")
+            
+            # Check if streaming is enabled
+            if not settings.STREAMING_RESPONSE:
+                # Generate non-streaming response
+                chain = prompt_template | self.llm_provider | StrOutputParser()
+                
+                if relevant_glossary:
+                    response = await chain.ainvoke({
+                        "context": filtered_context,
+                        "question": query_for_llm,
+                        "glossary": relevant_glossary
+                    })
+                else:
+                    response = await chain.ainvoke({
+                        "context": filtered_context,
+                        "question": query_for_llm
+                    })
+                
+                phase6_time = time.time() - phase6_start
+                total_time = phase5_state['phase_times']['total_phases_1_5'] + phase6_time
+                
+                yield {
+                    'chunk': response,
+                    'sources': sources,
+                    'from_cache': False,
+                    'processing_time': total_time,
+                    'phase_times': {
+                        **phase5_state['phase_times'],
+                        'phase6_time': phase6_time,
+                        'total_time': total_time
+                    },
+                    'done': True
+                }
+                return
+            
+            # === TRUE PHASE 6 STREAMING ===
+            logger.info("Starting true Phase 6 streaming")
+            
+            # Prepare prompt for streaming
+            if relevant_glossary:
+                formatted_prompt = await prompt_template.aformat_prompt(
+                    context=filtered_context,
+                    question=query_for_llm,
+                    glossary=relevant_glossary
+                )
+            else:
+                formatted_prompt = await prompt_template.aformat_prompt(
+                    context=filtered_context,
+                    question=query_for_llm
+                )
+            
+            # Extract the formatted text from the prompt
+            formatted_text = formatted_prompt.to_string()
+            
+            # Stream LLM response token by token
+            full_response = ""
+            chunk_count = 0
+            
+            try:
+                async for chunk in self.llm_provider.generate_response_stream(formatted_text):
+                    if chunk:  # Only yield non-empty chunks
+                        full_response += chunk
+                        chunk_count += 1
+                        
+                        # Yield each chunk immediately
+                        yield {
+                            'chunk': chunk,
+                            'chunk_index': chunk_count,
+                            'is_streaming': True
+                        }
+                        
+                        # Small delay to make streaming visible (optional)
+                        # await asyncio.sleep(0.01)
+                
+                phase6_time = time.time() - phase6_start
+                total_time = phase5_state['phase_times']['total_phases_1_5'] + phase6_time
+                
+                logger.info(f"Phase 6 streaming completed with {chunk_count} chunks in {phase6_time:.2f}s")
+                
+                # Store in cache if valid documents
+                has_relevant_docs = any(
+                    doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE 
+                    for doc in filtered_context if hasattr(doc, 'metadata') and doc.metadata
+                )
+                
+                if has_relevant_docs:
+                    enhanced_sources_for_cache = []
+                    for doc in filtered_context:
+                        if hasattr(doc, 'metadata') and doc.metadata and doc.metadata.get('reranking_score', 0) >= settings.MIN_RERANKING_SCORE:
+                            enhanced_metadata = doc.metadata.copy()
+                            enhanced_metadata['chunk_content'] = doc.page_content
+                            enhanced_sources_for_cache.append(enhanced_metadata)
+                    
+                    self.query_optimizer._store_llm_response(query_for_llm, full_response, enhanced_sources_for_cache)
+                    logger.info(f"Streaming response cached for query: '{query_for_llm[:50]}...'")
+                
+                # Yield final metadata with done signal
+                yield {
+                    'sources': sources,
+                    'from_cache': False,
+                    'processing_time': total_time,
+                    'full_response': full_response,
+                    'chunk_count': chunk_count,
+                    'phase_times': {
+                        **phase5_state['phase_times'],
+                        'phase6_time': phase6_time,
+                        'total_time': total_time
+                    },
+                    'done': True
+                }
+                
+            except Exception as e:
+                logger.error(f"Error in Phase 6 streaming: {e}")
+                # Fallback to non-streaming
+                chain = prompt_template | self.llm_provider | StrOutputParser()
+                
+                if relevant_glossary:
+                    response = await chain.ainvoke({
+                        "context": filtered_context,
+                        "question": query_for_llm,
+                        "glossary": relevant_glossary
+                    })
+                else:
+                    response = await chain.ainvoke({
+                        "context": filtered_context,
+                        "question": query_for_llm
+                    })
+                
+                phase6_time = time.time() - phase6_start
+                total_time = phase5_state['phase_times']['total_phases_1_5'] + phase6_time
+                
+                yield {
+                    'chunk': response,
+                    'sources': sources,
+                    'from_cache': False,
+                    'processing_time': total_time,
+                    'fallback_used': True,
+                    'phase_times': {
+                        **phase5_state['phase_times'],
+                        'phase6_time': phase6_time,
+                        'total_time': total_time
+                    },
+                    'done': True
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in stream_phase6_response: {e}")
+            yield {
+                'error': str(e),
+                'processing_time': time.time() - phase6_start
+            }
+
+    async def process_query_streaming(
+        self,
+        query: str,
+        retriever: Any,
+        chat_history: List[Tuple[str, str]] = [],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process query with real-time streaming of Phase 6 response.
+        
+        This method processes phases 1-5 normally, then streams the LLM response
+        token by token in Phase 6.
+        
+        Args:
+            query: User query
+            retriever: Unified retriever for the collection
+            chat_history: Chat history
+            
+        Yields:
+            Dictionary with streaming data or metadata
+        """
+        try:
+            pipeline_start_time = time.time()
+            
+            logger.info(f"🚀 Starting TRUE Phase 6-only streaming pipeline for query: '{query[:50]}...'")
+            
+            # Process phases 1-5
+            logger.info("📋 Processing phases 1-5 normally...")
+            phase5_state = await self.process_query_until_phase5(query, retriever, chat_history)
+            logger.info(f"✅ Phases 1-5 completed. State type: {phase5_state.get('type', 'unknown')}")
+            
+            # Handle cache hits and other early returns
+            if phase5_state['type'] in ['cache_hit', 'exact_cache', 'semantic_cache']:
+                logger.info(f"Early return from {phase5_state['type']}")
+                yield {
+                    'chunk': phase5_state['response'],
+                    'sources': phase5_state['sources'],
+                    'from_cache': True,
+                    'processing_time': phase5_state['processing_time'],
+                    'done': True
+                }
+                return
+            
+            # Continue with Phase 6 streaming
+            if phase5_state['type'] == 'ready_for_phase6':
+                logger.info("🎯 Proceeding to TRUE Phase 6 token-by-token streaming...")
+                chunk_count = 0
+                async for stream_data in self.stream_phase6_response(phase5_state):
+                    if 'chunk' in stream_data:
+                        chunk_count += 1
+                        if chunk_count <= 3:  # Log first few chunks
+                            logger.info(f"📤 Streaming chunk {chunk_count}: '{stream_data['chunk'][:30]}...'")
+                        elif chunk_count == 4:
+                            logger.info("📤 Continuing to stream chunks...")
+                    yield stream_data
+                    if stream_data.get('done', False):
+                        logger.info(f"✅ Phase 6 streaming completed with {chunk_count} chunks")
+                        break
+            else:
+                logger.error(f"Unexpected phase5_state type: {phase5_state['type']}")
+                yield {
+                    'error': f"Unexpected state: {phase5_state['type']}",
+                    'processing_time': time.time() - pipeline_start_time
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in process_query_streaming: {e}")
+            yield {
+                'error': str(e),
+                'processing_time': time.time() - pipeline_start_time
+            }
+
     async def initialize_retrievers_parallel(
         self,
         collection_name: str,

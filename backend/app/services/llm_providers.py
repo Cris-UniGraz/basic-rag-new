@@ -6,7 +6,7 @@ configuration, supporting both OpenAI and Meta LLM services.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, AsyncGenerator
 from loguru import logger
 import asyncio
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -26,6 +26,15 @@ class LLMProvider(ABC):
         system_prompt: Optional[str] = None
     ) -> str:
         """Generate a response asynchronously."""
+        pass
+    
+    @abstractmethod
+    async def generate_response_stream(
+        self, 
+        prompt: str, 
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """Generate a streaming response asynchronously."""
         pass
     
     @abstractmethod
@@ -126,6 +135,36 @@ class OpenAIProvider(LLMProvider):
             self._thread_pool,
             lambda: self._call_llm(prompt, system_prompt)
         )
+    
+    async def generate_response_stream(
+        self, 
+        prompt: str, 
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """Generate a streaming response asynchronously."""
+        system_content = system_prompt or "You are a helpful assistant."
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=settings.AZURE_OPENAI_LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=True
+            )
+            
+            for update in response:
+                if update.choices and update.choices[0].delta.content:
+                    yield update.choices[0].delta.content
+            
+        except Exception as e:
+            ERROR_COUNTER.labels(
+                error_type="APIError",
+                component="azure_openai_stream"
+            ).inc()
+            logger.error(f"Error calling Azure OpenAI streaming: {e}")
+            raise
     
     def __call__(self, prompt: Any) -> str:
         """Call method for compatibility with LangChain."""
@@ -252,6 +291,52 @@ class MetaProvider(LLMProvider):
             self._thread_pool,
             lambda: self._call_llm(prompt, system_prompt)
         )
+    
+    async def generate_response_stream(
+        self, 
+        prompt: str, 
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """Generate a streaming response asynchronously."""
+        try:
+            from azure.ai.inference.models import SystemMessage, UserMessage
+            
+            # Prepare messages
+            messages = []
+            
+            if system_prompt:
+                messages.append(SystemMessage(content=system_prompt))
+            else:
+                messages.append(SystemMessage(content="You are a helpful AI assistant."))
+            
+            messages.append(UserMessage(content=prompt))
+            
+            # Default parameters for streaming
+            params = {
+                "messages": messages,
+                "model": settings.AZURE_META_LLM_MODEL,
+                "max_tokens": 2048,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "presence_penalty": 0.0,
+                "frequency_penalty": 0.0,
+                "stream": True
+            }
+            
+            # Make the API call
+            response = self.client.complete(**params)
+            
+            for update in response:
+                if update.choices and update.choices[0].delta.content:
+                    yield update.choices[0].delta.content
+                
+        except Exception as e:
+            ERROR_COUNTER.labels(
+                error_type="APIError",
+                component="azure_meta_stream"
+            ).inc()
+            logger.error(f"Error calling Azure Meta streaming: {e}")
+            raise
     
     def __call__(self, prompt: Any) -> str:
         """Call method for compatibility with LangChain."""

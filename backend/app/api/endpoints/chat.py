@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, Request
+from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import time
 import asyncio
@@ -57,7 +58,7 @@ def determine_service_mode(persistent_service, startup_status):
         return "fallback", "Unknown startup mode"
 
 
-@router.post("/chat", response_model=ChatResponse, summary="Chat with RAG")
+@router.post("/", response_model=ChatResponse, summary="Chat with RAG")
 @track_active_tasks("chat_request")
 async def chat(
     messages: List[ChatMessage] = None,
@@ -544,3 +545,201 @@ async def chat(
         # Log request duration regardless of success/failure asíncronamente
         duration = time.time() - start_time
         async_metadata_processor.log_async("INFO", "Chat request completed", {"duration": duration, "endpoint": "/api/chat"})
+
+
+@router.post("/stream", summary="Chat with RAG using streaming")
+@track_active_tasks("chat_stream_request")
+async def chat_stream(
+    messages: List[ChatMessage] = None,
+    collection_name: str = Query(None, description="Collection name to use for retrieval"),
+    request: Request = None,
+):
+    """
+    Chat with the RAG system using streaming responses.
+    
+    - **messages**: List of chat messages
+    - **collection_name**: Collection name to use for retrieval
+    
+    Returns a Server-Sent Events stream with real-time response chunks.
+    """
+    start_time = time.time()
+    
+    logger.info("Streaming chat request received")
+    
+    # Parse request body if messages not provided directly
+    if messages is None and request:
+        try:
+            body_bytes = await request.body()
+            body_str = body_bytes.decode('utf-8')
+            body_data = json.loads(body_str)
+            
+            if "messages" in body_data and isinstance(body_data["messages"], list):
+                raw_messages = body_data["messages"]
+                messages = []
+                for msg in raw_messages:
+                    if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                        messages.append(ChatMessage(
+                            role=msg["role"],
+                            content=msg["content"],
+                        ))
+                logger.info(f"Successfully parsed {len(messages)} messages from request body")
+        except Exception as e:
+            logger.error(f"Error parsing request body: {e}")
+    
+    async def generate_stream():
+        """Generate streaming response."""
+        try:
+            # Validate messages
+            if not messages:
+                yield f"data: {json.dumps({'error': 'No messages provided'})}\n\n"
+                return
+            
+            if messages[-1].role != "user":
+                yield f"data: {json.dumps({'error': 'Last message must be from user'})}\n\n"
+                return
+            
+            user_query = messages[-1].content
+            if not user_query or len(user_query.strip()) == 0:
+                yield f"data: {json.dumps({'error': 'Query cannot be empty'})}\n\n"
+                return
+            
+            # Format chat history
+            chat_history = []
+            for i in range(0, len(messages) - 1, 2):
+                if i + 1 < len(messages) and messages[i].role == "user" and messages[i+1].role == "assistant":
+                    chat_history.append((messages[i].content, messages[i+1].content))
+            
+            # Determine collection and service
+            collection_name_to_use = collection_name or settings.COLLECTION_NAME
+            logger.info(f"Using collection for streaming: {collection_name_to_use}")
+            
+            # Get RAG service and retriever
+            persistent_service = get_persistent_rag_service(request)
+            startup_status = getattr(request.app.state, 'startup_status', None)
+            service_mode, mode_reason = determine_service_mode(persistent_service, startup_status)
+            
+            logger.info(f"Streaming service mode: {service_mode}")
+            
+            retriever = None
+            service_to_use = None
+            
+            if service_mode.startswith("persistent") and persistent_service:
+                try:
+                    priority = 1 if service_mode == "persistent_full" else 2
+                    retriever = await persistent_service.get_persistent_retriever(
+                        collection_name_to_use, 
+                        settings.MAX_CHUNKS_CONSIDERED,
+                        priority=priority
+                    )
+                    service_to_use = persistent_service
+                    logger.info("Using persistent service for streaming")
+                except Exception as e:
+                    logger.error(f"Error getting persistent retriever for streaming: {e}")
+            
+            # Fallback to traditional service
+            if not retriever:
+                try:
+                    await rag_service.ensure_initialized()
+                    retriever = await rag_service.get_retriever(collection_name_to_use, settings.MAX_CHUNKS_CONSIDERED)
+                    service_to_use = rag_service
+                    logger.info("Using traditional service for streaming")
+                except Exception as e:
+                    logger.error(f"Failed to get traditional retriever for streaming: {e}")
+                    yield f"data: {json.dumps({'error': 'Service initialization failed'})}\n\n"
+                    return
+            
+            if not retriever:
+                yield f"data: {json.dumps({'error': f'Collection {collection_name_to_use} not found'})}\n\n"
+                return
+            
+            # Send initial status
+            yield f"data: {json.dumps({'status': 'processing', 'message': 'Starting query processing...'})}\n\n"
+            
+            # Check if streaming is enabled
+            if not settings.STREAMING_RESPONSE:
+                # If streaming is disabled, process normally and send complete response
+                logger.info("STREAMING_RESPONSE is disabled, processing normally")
+                
+                if service_to_use == persistent_service and hasattr(persistent_service, 'process_query_with_persistent_retrievers'):
+                    result = await persistent_service.process_query_with_persistent_retrievers(
+                        user_query,
+                        collection_name_to_use,
+                        chat_history,
+                        settings.MAX_CHUNKS_CONSIDERED
+                    )
+                else:
+                    result = await rag_service.process_query(
+                        user_query,
+                        retriever,
+                        chat_history
+                    )
+                
+                # Send complete response
+                response_data = {
+                    'chunk': result.get('response', ''),
+                    'sources': result.get('sources', []),
+                    'processing_time': result.get('processing_time', 0),
+                    'from_cache': result.get('from_cache', False)
+                }
+                yield f"data: {json.dumps(response_data)}\n\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                return
+            
+            # Process with streaming enabled
+            logger.info("Processing query with streaming enabled")
+            
+            # We need to modify the RAG service to support partial streaming
+            # For now, we'll process the query until Phase 5 and then stream Phase 6
+            
+            # Get the LLM provider from the service
+            llm_provider = None
+            if hasattr(service_to_use, 'llm_provider'):
+                llm_provider = service_to_use.llm_provider
+            else:
+                # Fallback: get LLM provider from llm_service
+                from app.services.llm_service import llm_service
+                llm_provider = llm_service
+            
+            if not llm_provider:
+                yield f"data: {json.dumps({'error': 'LLM provider not available'})}\n\n"
+                return
+            
+            # Process with real streaming (always use traditional RAG service for true Phase 6 streaming)
+            try:
+                # For true Phase 6-only streaming, we always use the traditional RAG service
+                # with process_query_streaming regardless of which service was selected for retriever
+                logger.info("Using traditional RAG service for true Phase 6 streaming")
+                
+                async for stream_data in rag_service.process_query_streaming(
+                    user_query,
+                    retriever,  # Use the retriever from whichever service was selected
+                    chat_history
+                ):
+                    # Send each chunk as it arrives
+                    yield f"data: {json.dumps(stream_data)}\n\n"
+                    
+                    # Check if this is the done signal
+                    if stream_data.get('done', False):
+                        return
+                
+            except Exception as e:
+                logger.error(f"Error during streaming query processing: {e}")
+                yield f"data: {json.dumps({'error': f'Processing failed: {str(e)}'})}\n\n"
+                return
+            
+            # Send completion signal
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Error in streaming generation: {e}")
+            yield f"data: {json.dumps({'error': f'Streaming failed: {str(e)}'})}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering for true streaming
+        }
+    )
